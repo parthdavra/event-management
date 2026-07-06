@@ -1,0 +1,40 @@
+# Web framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+
+# Database
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+alembic>=1.13.0
+
+# Auth & security
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt==4.0.1
+
+# Settings
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+pydantic[email]>=2.0.0
+python-dotenv>=1.0.0
+
+# File uploads
+python-multipart>=0.0.9
+
+# AI / RAG
+openai>=1.12.0
+chromadb>=0.4.22
+
+# Document parsing
+pypdf>=3.0.0
+python-docx>=1.1.0
+
+# HTTP (venue APIs)
+requests>=2.31.0
+
+# HTML scraping (Canvas Events)
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+
+# MCP-Tools client
+mcp>=1.0.0
