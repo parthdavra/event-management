@@ -16,10 +16,10 @@ router = APIRouter(prefix="/venues", tags=["venues"])
 @router.post("/search", response_model=VenueSearchResponse)
 async def search_venues(
     body: VenueSearchRequest,
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     try:
-        return await smart_search_venues(body)
+        return await smart_search_venues(body, user_id=current_user.id)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 

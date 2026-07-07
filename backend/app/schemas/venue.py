@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class VenueSearchRequest(BaseModel):
@@ -14,9 +14,14 @@ class VenueSearchRequest(BaseModel):
     min_capacity: int = 0
     event_type: str = ""
     max_radius_km: int = 25
+    venue_hire_budget: float = 0  # 0 = no budget filter; positive = max venue hire spend
 
 
 class VenueOut(BaseModel):
+    # extra='allow' so Canvas-rich fields (canvas_price_guide, canvas_features, etc.)
+    # survive the response model and reach the frontend intact.
+    model_config = ConfigDict(extra="allow")
+
     name: str
     type: Optional[str] = None
     address: Optional[str] = None
@@ -46,6 +51,16 @@ class VenueOut(BaseModel):
     min_spend: Optional[str] = None
     event_types: Optional[List[str]] = None
     event_type_match: Optional[bool] = None
+    # Budget-fit fields (set by backend when venue_hire_budget is provided)
+    within_hire_budget: Optional[bool] = None
+    over_hire_budget: Optional[bool] = None
+    parsed_price: Optional[float] = None
+    # Canvas Events rich structured data
+    canvas_price_guide: Optional[Dict[str, Any]] = None
+    canvas_capacity_detail: Optional[Dict[str, Any]] = None
+    canvas_spaces: Optional[List[Dict[str, Any]]] = None
+    canvas_perfect_for: Optional[List[str]] = None
+    canvas_features: Optional[Dict[str, List[str]]] = None
 
     @field_validator("wheelchair", "internet_access", "outdoor_seating", "stars", "rooms",
                      "capacity_raw", mode="before")

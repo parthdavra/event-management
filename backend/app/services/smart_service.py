@@ -110,18 +110,48 @@ async def _try_mcp(
 
 # ── Smart venue search ────────────────────────────────────────────────────────
 
-async def smart_search_venues(body: VenueSearchRequest) -> dict[str, Any]:
+async def smart_search_venues(body: VenueSearchRequest, user_id: int = 0) -> dict[str, Any]:
     """
-    Venue search with MCP → local fallback.
+    Venue search with priority chain:
+      1. Indexed ChromaDB chunks (if the user has indexed this event type)
+      2. Canvas Events API (primary for all cities)
+      3. MCP tool / other APIs as final fallback
+    """
+    from app.services import rag_service as _rag
+    from app.services.indexing_service import get_event_type_collection_name
 
-    For London / Manchester, Canvas Events is the primary data source.
-    MCP is skipped for these cities so Canvas Events always gets first call.
-    """
-    # Canvas cities bypass MCP — fetch_all_city_venues handles Canvas as primary.
+    # ── Priority 1: serve from indexed chunks ─────────────────────────────────
+    if user_id and body.event_type:
+        collection_name = get_event_type_collection_name(user_id, body.event_type)
+        chunk_venues: list[dict] = await asyncio.to_thread(
+            _rag.get_raw_json_chunks_from_collection, collection_name, body.city
+        )
+        if chunk_venues:
+            for v in chunk_venues:
+                v.pop("_city", None)
+                if not v.get("map_thumbnail_url"):
+                    v["map_thumbnail_url"] = _map_thumbnail_url(v.get("lat"), v.get("lon"))
+            logger.info(
+                "chunks_hit collection=%s city=%s venues=%d",
+                collection_name, body.city, len(chunk_venues),
+            )
+            return {
+                "city": body.city,
+                "venues": chunk_venues,
+                "total": len(chunk_venues),
+                "source_counts": {"Indexed Chunks": len(chunk_venues)},
+                "tool_source": "chunks",
+                "tool_name": collection_name,
+                "radius_km_used": 0,
+            }
+        logger.info("chunks_miss collection=%s — falling through to APIs", collection_name)
+
+    # ── Priority 2 & 3: Canvas Events first, then other APIs ─────────────────
+    # Canvas cities bypass MCP — fetch_all_city_venues uses Canvas as primary.
     if not canvas_service.is_canvas_city(body.city):
-        client = MCPToolsClient()
+        mcp_client = MCPToolsClient()
         result, ok = await _try_mcp(
-            client.search_venues(
+            mcp_client.search_venues(
                 city=body.city,
                 categories=body.categories,
                 min_capacity=body.min_capacity,
@@ -129,7 +159,6 @@ async def smart_search_venues(body: VenueSearchRequest) -> dict[str, Any]:
             ),
             "em_search_venues",
         )
-
         if ok:
             venues: list[dict] = result.get("venues", [])
             for v in venues:
@@ -144,7 +173,7 @@ async def smart_search_venues(body: VenueSearchRequest) -> dict[str, Any]:
                 "tool_name": "em_search_venues",
             }
 
-    # Local path — Canvas Events is primary for London/Manchester inside here
+    # Local path — Canvas Events is primary for London/Manchester inside fetch_venues
     resp = await asyncio.to_thread(fetch_venues, body)
     return {
         "city": resp.city,

@@ -22,6 +22,10 @@ class EventUpdate(BaseModel):
     is_shared: Optional[bool] = None
 
 
+class EventBriefRequest(BaseModel):
+    text: str
+
+
 class EventOut(BaseModel):
     id: int
     user_id: int
@@ -33,5 +37,7 @@ class EventOut(BaseModel):
     is_shared: bool
     created_at: datetime
     updated_at: datetime
+    brief_json: Optional[str] = None
+    catering_json: Optional[str] = None
 
     model_config = {"from_attributes": True}

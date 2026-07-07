@@ -119,6 +119,137 @@ _LONDON_VENUE_TYPES = [
     "christmas-party-venues",
 ]
 
+# Feature slugs for /hire-venue-{city}?features=... filtered discovery
+_CANVAS_FEATURE_SLUGS: dict[str, str] = {
+    # Venue Specs
+    "accommodation": "accommodation",
+    "air conditioning": "air-conditioning",
+    "breakout rooms": "breakout-rooms",
+    "cloakroom": "cloakroom",
+    "dancefloor": "dancefloor",
+    "dog friendly": "dog-friendly",
+    "early access": "early-access",
+    "elevator": "elevator",
+    "goods lift": "goods-lift",
+    "loading bay": "loading-bay",
+    "outside area": "outside-area",
+    "parking facilities": "parking-facilities",
+    "rain friendly": "rain-friendly",
+    "ramps": "ramps",
+    "separate entrance": "separate-entrance",
+    "smoking area": "smoking-area",
+    "toilets": "toilets",
+    "wheelchair": "wheelchair",
+    "whiteboards/ flipcharts": "whiteboards-flipcharts",
+    # Technical
+    "av equipment": "av-equipment",
+    "byo dj": "byo-dj",
+    "hearing loop": "hearing-loop",
+    "high speed fibre optic": "high-speed-fibre-optic",
+    "on-site technician": "on-site-technician",
+    "pa system": "pa-system",
+    "screens / projector": "screens-projector",
+    "sky sports": "sky-sports",
+    "stage": "stage",
+    "video conferencing": "video-conferencing",
+    "video recording": "video-recording",
+    "wi-fi": "wi-fi",
+    # Catering
+    "external caterers": "external-caterers",
+    "can provide halal": "halal",
+    "can provide kosher": "kosher",
+    "dry hire": "dry-hire",
+    "fridge/freezer": "fridge-freezer",
+    "full catering kitchen": "full-catering-kitchen",
+    "inhouse caterers available": "inhouse-caterers",
+    "kitchen facilities": "kitchen-facilities",
+    "tables & chairs": "tables-chairs",
+    "tableware": "tableware",
+    "vegan friendly": "vegan-friendly",
+    "venue can provide alcohol": "venue-alcohol",
+    "wet hire": "wet-hire",
+    # Allowed events
+    "18th birthday": "18th-birthday",
+    "21st birthday": "21st-birthday",
+    "child friendly": "child-friendly",
+    "loud music": "loud-music",
+    "open past 12am": "open-past-12am",
+    "ticketed events": "ticketed-events",
+    # Licensing
+    "alcohol license": "alcohol-license",
+    "byob": "byob",
+    "civil ceremony licence": "civil-ceremony-licence",
+    "full wedding license": "full-wedding-license",
+    "late license": "late-license",
+    "tens available": "tens-available",
+}
+
+# Venue style slugs for venue_types= parameter
+_CANVAS_VENUE_TYPE_SLUGS: dict[str, str] = {
+    "academic": "academic",
+    "activity bar": "activity-bar",
+    "arenas": "arenas",
+    "auditorium": "auditorium",
+    "ballroom": "ballroom",
+    "banquet hall": "banquet-hall",
+    "bars": "bars",
+    "blank canvas": "blank-canvas",
+    "boardroom": "boardroom",
+    "boat": "boat",
+    "cafe": "cafe",
+    "church": "church",
+    "cinema": "cinema",
+    "city mansions": "city-mansions",
+    "co-working space": "co-working-space",
+    "community centre": "community-centre",
+    "conference space": "conference-space",
+    "country house": "country-house",
+    "courtyards": "courtyards",
+    "creative spaces": "creative-spaces",
+    "dance studios": "dance-studios",
+    "dry hire": "dry-hire",
+    "event space": "event-space",
+    "exhibition centres": "exhibition-centres",
+    "festival": "festival",
+    "function room": "function-room",
+    "galleries": "galleries",
+    "gardens": "gardens",
+    "halls": "halls",
+    "historic": "historic",
+    "hotels": "hotels",
+    "indoor sporting venues": "indoor-sporting-venues",
+    "industrial spaces": "industrial-spaces",
+    "institutional": "institutional",
+    "kitchens": "kitchens",
+    "landmark buildings": "landmark-buildings",
+    "large scale": "large-scale",
+    "luxury": "luxury",
+    "members club": "members-club",
+    "minimum spend": "minimum-spend",
+    "modern": "modern",
+    "museums": "museums",
+    "music venues": "music-venues",
+    "nightclubs": "nightclubs",
+    "outdoor sporting venue": "outdoor-sporting-venue",
+    "penthouse / apartment": "penthouse-apartment",
+    "private house": "private-house",
+    "pubs": "pubs",
+    "railway arch": "railway-arch",
+    "rehearsal space": "rehearsal-space",
+    "restaurants": "restaurants",
+    "riverside": "riverside",
+    "roof terrace": "roof-terrace",
+    "sports halls": "sports-halls",
+    "stately homes": "stately-homes",
+    "supper club": "supper-club",
+    "theatres": "theatres",
+    "themed": "themed",
+    "townhouses": "townhouses",
+    "unique / unusual": "unique-unusual",
+    "vacant spaces": "vacant-space",
+    "warehouses": "warehouses",
+}
+
 # Seed listing URLs per city — event-intent pattern only
 # Pattern: /event/hire/{event_type}/venues/{city}  (verified, always canonical)
 _CATEGORY_LISTING_URLS: dict[str, list[str]] = {
@@ -191,6 +322,46 @@ _EVENT_TYPE_KEYWORDS: dict[str, list[str]] = {
     "exhibition":     ["exhibition", "pop-up", "brand activation", "sample sale"],
     "meeting":        ["meeting", "presentation", "conference", "away day"],
 }
+
+
+def build_canvas_filter_url(
+    city: str,
+    event_type: str = "",
+    features: list[str] | None = None,
+    venue_types: list[str] | None = None,
+) -> str:
+    """
+    Build a Canvas Events hire-venue filtered URL.
+
+    Example:
+      build_canvas_filter_url("london", "networking", ["wi-fi", "breakout rooms"])
+      → https://www.canvas-events.co.uk/hire-venue-london?features=wi-fi%2Cbreakout-rooms&event_type=networking
+    """
+    city_slug = re.sub(r"[^a-z0-9]", "-", city.lower().strip()).strip("-")
+    url = f"{_BASE}/hire-venue-{city_slug}"
+    params: list[str] = []
+
+    if features:
+        feat_slugs = [
+            _CANVAS_FEATURE_SLUGS.get(f.lower(), re.sub(r"[^a-z0-9]", "-", f.lower()).strip("-"))
+            for f in features
+        ]
+        params.append("features=" + "%2C".join(feat_slugs))
+
+    if venue_types:
+        vt_slugs = [
+            _CANVAS_VENUE_TYPE_SLUGS.get(v.lower(), re.sub(r"[^a-z0-9]", "-", v.lower()).strip("-"))
+            for v in venue_types
+        ]
+        params.append("venue_types=" + "%2C".join(vt_slugs))
+
+    if event_type:
+        et_slug = re.sub(r"[^a-z0-9]", "-", event_type.lower().strip()).strip("-")
+        params.append(f"event_type={et_slug}")
+
+    if params:
+        url += "?" + "&".join(params)
+    return url
 
 
 def _event_type_keywords(event_type: str) -> set[str]:

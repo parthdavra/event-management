@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, JSON
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -19,6 +19,10 @@ class Event(Base):
     is_shared = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
+    # AI-extracted planning requirements (JSON string from ai_extract_requirements)
+    brief_json = Column(Text, nullable=True)
+    # AI-extracted catering requirements (JSON string from parse_catering_requirements)
+    catering_json = Column(Text, nullable=True)
 
     owner = relationship("User", back_populates="events")
     messages = relationship("ChatMessage", back_populates="event", cascade="all, delete-orphan")

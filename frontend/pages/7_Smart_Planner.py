@@ -48,6 +48,14 @@ _EVENT_CATEGORY_MAP = {
     "exhibition": ["Arts & Entertainment"],
 }
 
+COMMON_FACILITIES = [
+    "Wi-Fi", "AV equipment", "Stage", "PA System", "Screens / Projector",
+    "Wheelchair accessible", "Parking Facilities", "Air Conditioning",
+    "Catering kitchen", "Outdoor area", "Breakout rooms",
+    "Video Conferencing", "Dancefloor", "Bar / Alcohol license",
+    "Tables & Chairs", "Natural light",
+]
+
 def _smart_default_categories(event_type: str, ai_cats: list) -> list:
     valid = [c for c in ai_cats if c in ALL_CATEGORIES]
     if valid:
@@ -317,10 +325,54 @@ def _render_venue_card(v: dict, idx: int = 0, required_guests: int = 0):
             st.json(v)
 
 
+def _score_venue(v: dict, required_guests: int, venue_hire_budget: float, required_facilities: list) -> tuple:
+    """Return (score:int, matched_facilities:list) for ranking venues."""
+    score = 0
+    matched_facs = []
+
+    # Capacity fit (+3 if fits, +1 if just has data)
+    cap = _parse_first_num(v.get("capacity", ""))
+    if cap > 0:
+        if required_guests and cap >= required_guests:
+            score += 3
+        else:
+            score += 1
+
+    # Budget fit
+    if venue_hire_budget > 0:
+        if v.get("within_hire_budget"):
+            score += 3  # confirmed within budget
+        elif v.get("parsed_price") is None:
+            score += 1  # price unknown — don't penalise
+
+    # Contact info available
+    if v.get("phone") or v.get("email") or v.get("website"):
+        score += 1
+
+    # Facilities match
+    if required_facilities:
+        all_feats = []
+        for cat_items in (v.get("canvas_features") or {}).values():
+            all_feats.extend(str(x).lower() for x in (cat_items or []))
+        if v.get("wheelchair", "").lower() in ("yes", "designated", "limited"):
+            all_feats.append("wheelchair accessible")
+        if v.get("internet_access", "").lower() not in ("", "no"):
+            all_feats.extend(["wi-fi", "wifi"])
+        if v.get("outdoor_seating", "").lower() == "yes":
+            all_feats.append("outdoor area")
+        for fac in required_facilities:
+            fac_l = fac.lower()
+            if any(fac_l in feat or feat in fac_l for feat in all_feats):
+                score += 1
+                matched_facs.append(fac)
+
+    return score, matched_facs
+
+
 # ── Session state keys ────────────────────────────────────────────────────────
 for key in ("sp_raw_text", "sp_requirements", "sp_venues", "sp_source_counts",
             "sp_indexed_collection", "sp_tool_source", "sp_tool_name", "sp_budget",
-            "sp_radius_km_used"):
+            "sp_radius_km_used", "sp_venue_hire_budget", "sp_budget_currency"):
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -329,73 +381,210 @@ if "sp_enriched" not in st.session_state:
 
 
 
+# ── Helpers for auto-creating an event from extracted requirements ─────────────
+import json as _json
+from datetime import datetime as _dt, timedelta as _td
+
+_CATEGORY_MAP = {
+    "conference": "Conference", "seminar": "Conference", "meeting": "Conference",
+    "workshop": "Conference", "training": "Conference", "agm": "Conference",
+    "wedding": "Wedding", "birthday": "Birthday", "graduation": "Graduation",
+    "concert": "Concert", "party": "Party", "gala": "Party",
+    "corporate party": "Corporate", "corporate reception": "Corporate",
+    "corporate": "Corporate", "networking": "Corporate", "product launch": "Corporate",
+    "awards": "Corporate", "exhibition": "Other", "festival": "Other",
+}
+
+def _map_sp_category(event_type: str) -> str:
+    et = (event_type or "").lower().strip()
+    for kw, cat in _CATEGORY_MAP.items():
+        if kw in et:
+            return cat
+    return "Other"
+
+def _parse_sp_date(date_str: str):
+    """Try to parse a free-form date string into a Python datetime. Falls back to 30 days out."""
+    if not date_str:
+        return _dt.now() + _td(days=30)
+    for fmt in ("%d %b %Y", "%d/%m/%Y", "%Y-%m-%d", "%B %d, %Y",
+                "%d %B %Y", "%m/%d/%Y", "%d-%m-%Y"):
+        try:
+            return _dt.strptime(date_str.strip(), fmt)
+        except ValueError:
+            continue
+    # Try parsing just the year
+    import re as _re
+    yr = _re.search(r"\b(20\d{2})\b", date_str)
+    return _dt(_int(yr.group(1)) if yr else _dt.now().year + 1, 1, 1)
+
+def _int(x):
+    try:
+        return int(x)
+    except Exception:
+        return 0
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# STEP 1 — Input
+# STEP 1 — Load or Describe Your Event
 # ═══════════════════════════════════════════════════════════════════════════════
-st.markdown("## Step 1 — Describe Your Event")
 
-input_method = st.radio("Input method", ["Upload file (PDF / DOCX / TXT)", "Type / paste requirements"], horizontal=True)
-raw_text = ""
+st.markdown("## Step 1 — Your Event Brief")
 
-if input_method.startswith("Upload"):
-    uploaded = st.file_uploader("Upload event brief", type=["pdf", "docx", "txt"])
-    if uploaded:
-        # Send to backend for text extraction via document indexing endpoint
-        # but we only want the text, not to index yet — so we use a simple client-side decode
-        ext = uploaded.name.rsplit(".", 1)[-1].lower()
-        file_bytes = uploaded.read()
-        if ext == "txt":
-            raw_text = file_bytes.decode("utf-8", errors="ignore")
-        else:
-            # Upload briefly to backend with a temp name to extract text
-            # Better: just display a note and let user paste
-            st.info(f"📄 File uploaded: **{uploaded.name}** ({len(file_bytes):,} bytes). "
-                    "The file will be sent to the backend for AI extraction when you click 'Extract Requirements'.")
-            st.session_state["_sp_upload_bytes"] = file_bytes
-            st.session_state["_sp_upload_name"] = uploaded.name
-            raw_text = f"[FILE: {uploaded.name}]"  # placeholder
-else:
-    raw_text = st.text_area(
-        "Paste your event requirements",
-        height=200,
-        placeholder=(
-            "e.g. We need a venue near Camden Market for 250 guests on 18 Sep 2026. "
-            "Budget £32,500. Looking for a conference or event hall within 1 km."
-        ),
-    )
+# ── Fetch events that have a saved brief ──────────────────────────────────────
+try:
+    _all_events = client.list_events()
+    _events_with_brief = [e for e in _all_events if e.get("brief_json")]
+except Exception:
+    _all_events = []
+    _events_with_brief = []
 
-extract_btn = st.button(
-    "✨ Extract Requirements with AI",
-    type="primary",
-    disabled=not raw_text.strip(),
+input_method = st.radio(
+    "How would you like to start?",
+    ["📅 Load from saved event", "📝 New brief (file or paste)"],
+    horizontal=True,
+    key="sp_input_method",
 )
 
-if extract_btn and raw_text.strip():
-    actual_text = raw_text
-    if raw_text.startswith("[FILE:") and st.session_state.get("_sp_upload_bytes"):
-        try:
-            with st.spinner("Extracting text from file…"):
-                actual_text = client.extract_text_from_file(
-                    st.session_state["_sp_upload_bytes"],
-                    st.session_state["_sp_upload_name"],
-                )
-            if not actual_text.strip():
-                st.error("No readable text found in the uploaded file.")
-                st.stop()
-        except APIError as exc:
-            st.error(f"Text extraction failed: {exc.detail}")
-            st.stop()
+if input_method.startswith("📅"):
+    # ── Load from existing event ───────────────────────────────────────────────
+    if not _events_with_brief:
+        st.info(
+            "No events have a planning brief yet. "
+            "Go to **Events → My Events** and click **📝 Add AI Planning Brief** on any event, then come back here."
+        )
+    else:
+        event_options = {
+            f"{e['title']} ({e['category']} · {e['date_time'][:10]})": e
+            for e in _events_with_brief
+        }
+        selected_label = st.selectbox("Select event", list(event_options.keys()), key="sp_event_select")
+        selected_event = event_options[selected_label]
 
-    with st.spinner("AI is reading your brief…"):
+        # Preview the saved brief
         try:
-            reqs = client.ai_extract_requirements(actual_text)
-            st.session_state["sp_raw_text"] = actual_text
-            st.session_state["sp_requirements"] = reqs
-            st.session_state["sp_venues"] = None
-            st.session_state["sp_source_counts"] = None
-            st.session_state["sp_indexed_collection"] = None
-        except APIError as exc:
-            st.error(f"Extraction failed: {exc.detail}")
+            saved_brief = _json.loads(selected_event["brief_json"])
+            pc1, pc2, pc3, pc4 = st.columns(4)
+            pc1.metric("Event type", saved_brief.get("event_type", "—"))
+            pc2.metric("Guests", saved_brief.get("guest_count", "—"))
+            pc3.metric("Budget", saved_brief.get("budget", "—"))
+            pc4.metric("City", saved_brief.get("city", "—"))
+        except Exception:
+            saved_brief = {}
+            st.caption("Could not parse saved brief — click Load to try anyway.")
+
+        if st.button("📥 Load This Event's Brief", type="primary", key="sp_load_from_event"):
+            try:
+                reqs = saved_brief if saved_brief else _json.loads(selected_event["brief_json"])
+                st.session_state["sp_raw_text"] = f"[Loaded from event: {selected_event['title']}]"
+                st.session_state["sp_requirements"] = reqs
+                st.session_state["sp_venues"] = None
+                st.session_state["sp_source_counts"] = None
+                st.session_state["sp_indexed_collection"] = None
+                st.success(f"✅ Loaded brief for **{selected_event['title']}** — review and edit below.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Failed to load brief: {exc}")
+
+else:
+    # ── New brief: file upload or paste ───────────────────────────────────────
+    new_brief_method = st.radio(
+        "Input method",
+        ["📎 Upload file (PDF / DOCX / TXT)", "✏️ Type / paste requirements"],
+        horizontal=True,
+        key="sp_new_method",
+    )
+    raw_text = ""
+
+    if new_brief_method.startswith("📎"):
+        uploaded = st.file_uploader("Upload event brief", type=["pdf", "docx", "txt"])
+        if uploaded:
+            ext = uploaded.name.rsplit(".", 1)[-1].lower()
+            file_bytes = uploaded.read()
+            if ext == "txt":
+                raw_text = file_bytes.decode("utf-8", errors="ignore")
+            else:
+                st.info(f"📄 **{uploaded.name}** ({len(file_bytes):,} bytes) — click Extract to process.")
+                st.session_state["_sp_upload_bytes"] = file_bytes
+                st.session_state["_sp_upload_name"] = uploaded.name
+                raw_text = f"[FILE: {uploaded.name}]"
+    else:
+        raw_text = st.text_area(
+            "Paste your event requirements",
+            height=200,
+            placeholder=(
+                "e.g. We need a venue near Camden Market for 250 guests on 18 Sep 2026. "
+                "Budget £32,500. Looking for a conference or event hall within 1 km."
+            ),
+        )
+
+    extract_btn = st.button(
+        "✨ Extract Requirements with AI",
+        type="primary",
+        disabled=not raw_text.strip(),
+    )
+
+    if extract_btn and raw_text.strip():
+        actual_text = raw_text
+        if raw_text.startswith("[FILE:") and st.session_state.get("_sp_upload_bytes"):
+            try:
+                with st.spinner("Extracting text from file…"):
+                    actual_text = client.extract_text_from_file(
+                        st.session_state["_sp_upload_bytes"],
+                        st.session_state["_sp_upload_name"],
+                    )
+                if not actual_text.strip():
+                    st.error("No readable text found in the uploaded file.")
+                    st.stop()
+            except APIError as exc:
+                st.error(f"Text extraction failed: {exc.detail}")
+                st.stop()
+
+        with st.spinner("AI is reading your brief…"):
+            try:
+                reqs = client.ai_extract_requirements(actual_text)
+                st.session_state["sp_raw_text"] = actual_text
+                st.session_state["sp_requirements"] = reqs
+                st.session_state["sp_venues"] = None
+                st.session_state["sp_source_counts"] = None
+                st.session_state["sp_indexed_collection"] = None
+            except APIError as exc:
+                st.error(f"Extraction failed: {exc.detail}")
+                st.stop()
+
+        # ── Auto-create event and store brief in DB ───────────────────────────
+        reqs = st.session_state.get("sp_requirements") or {}
+        if reqs:
+            try:
+                ev_title    = reqs.get("event_name") or "Untitled Event"
+                ev_date     = _parse_sp_date(reqs.get("event_date") or "")
+                ev_location = reqs.get("location_hint") or reqs.get("city") or ""
+                ev_category = _map_sp_category(reqs.get("event_type") or "")
+                ev_desc_parts = []
+                if reqs.get("guest_count"):
+                    ev_desc_parts.append(f"Guests: {reqs['guest_count']}")
+                if reqs.get("budget"):
+                    ev_desc_parts.append(f"Budget: {reqs['budget']}")
+                if reqs.get("event_type"):
+                    ev_desc_parts.append(f"Type: {reqs['event_type']}")
+                ev_desc = " · ".join(ev_desc_parts) if ev_desc_parts else None
+
+                with st.spinner(f"Creating event **{ev_title}** in database…"):
+                    new_event = client.create_event(
+                        title=ev_title,
+                        date_time=ev_date.isoformat(),
+                        description=ev_desc,
+                        location=ev_location or None,
+                        category=ev_category,
+                        is_shared=False,
+                    )
+                    client.save_event_brief(new_event["id"], actual_text)
+                    st.session_state["sp_created_event_id"] = new_event["id"]
+                st.success(
+                    f"✅ Event **{ev_title}** created and brief saved — "
+                    f"view it in **Events → My Events** (ID {new_event['id']})"
+                )
+            except Exception as exc:
+                st.warning(f"Brief extracted but event creation failed: {exc} — you can continue planning below.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -436,7 +625,27 @@ if st.session_state["sp_requirements"]:
         max_chars=20,
     )
 
+    default_facs = reqs.get("required_facilities") or st.session_state.get("sp_req_facilities") or []
+    required_facilities_input = st.multiselect(
+        "Required Facilities (optional — used to rank venues)",
+        options=COMMON_FACILITIES,
+        default=[f for f in default_facs if f in COMMON_FACILITIES],
+        key="sp_req_facilities",
+        help="Venues that have these facilities will rank higher in the Top 10",
+    )
+
     st.markdown("---")
+
+    # Show venue hire budget preview
+    _currency_prev, _amount_prev = _parse_budget_amount(budget)
+    if _amount_prev > 0:
+        venue_hire_preview = _amount_prev * 0.35
+        st.info(
+            f"💡 **Venue hire budget:** {_currency_prev}{venue_hire_preview:,.0f} "
+            f"(35% of {_currency_prev}{_amount_prev:,} total — from budget planner). "
+            "Only venues within this range will be shown first; radius auto-expands until at least one is found."
+        )
+
     fetch_btn = st.button(
         f"🔍 Fetch Venues near **{location_hint or city}** (radius {radius_km} km)",
         type="primary",
@@ -444,7 +653,10 @@ if st.session_state["sp_requirements"]:
     )
 
     if fetch_btn:
-        with st.spinner(f"Geocoding and fetching venues…"):
+        _currency, _amount = _parse_budget_amount(budget)
+        venue_hire_budget = round(_amount * 0.35) if _amount > 0 else 0
+
+        with st.spinner(f"Fetching venues within budget{' (auto-expanding radius until within-budget venue found)' if venue_hire_budget else ''}…"):
             try:
                 result = client.search_venues(
                     city=location_hint.strip() or city.strip(),
@@ -456,21 +668,23 @@ if st.session_state["sp_requirements"]:
                     max_venues=500,
                     event_type=event_type,
                     max_radius_km=25,
+                    venue_hire_budget=venue_hire_budget,
                 )
                 st.session_state["sp_venues"] = result["venues"]
                 st.session_state["sp_source_counts"] = result["source_counts"]
                 st.session_state["sp_tool_source"] = result.get("tool_source", "local")
                 st.session_state["sp_tool_name"] = result.get("tool_name", "venue_service")
                 st.session_state["sp_radius_km_used"] = result.get("radius_km_used", radius_km)
-                st.session_state["sp_enriched"] = {}  # clear stale enrichments from previous search
+                st.session_state["sp_venue_hire_budget"] = venue_hire_budget
+                st.session_state["sp_budget_currency"] = _currency or "£"
+                st.session_state["sp_enriched"] = {}
                 st.session_state["sp_requirements"].update({
                     "event_name": event_name, "city": city, "location_hint": location_hint,
                     "radius_km": radius_km, "guest_count": guest_count, "budget": budget,
                     "event_date": event_date, "event_type": event_type,
                     "categories": selected_cats, "collection_slug": collection_slug,
+                    "required_facilities": required_facilities_input,
                 })
-                # Fetch budget plan alongside venue results
-                _currency, _amount = _parse_budget_amount(budget)
                 if _amount > 0:
                     try:
                         st.session_state["sp_budget"] = client.budget_planner(
@@ -502,24 +716,53 @@ if st.session_state["sp_venues"] is not None:
     radius_km_used = st.session_state.get("sp_radius_km_used") or reqs.get("radius_km", 5)
     requested_radius = reqs.get("radius_km", 5)
 
+    venue_hire_budget = st.session_state.get("sp_venue_hire_budget", 0)
+    budget_currency = st.session_state.get("sp_budget_currency", "£")
+
     if not venues:
-        st.warning("No venues found. Try increasing the radius or adding more categories.")
-    else:
-        col_a, col_b, col_c = st.columns(3)
-        col_a.metric("Venues fetched", len(venues))
-        if radius_km_used and radius_km_used != requested_radius:
-            col_b.metric("Search radius", f"{radius_km_used} km", delta=f"+{radius_km_used - requested_radius} km auto-expanded")
-        else:
-            col_b.metric("Search radius", f"{radius_km_used} km")
-
-        with_cap = sum(1 for v in venues if v.get("capacity"))
-        with_contact = sum(1 for v in venues if v.get("phone") or v.get("email") or v.get("website"))
-        st.caption(
-            f"✅ Capacity data: **{with_cap}/{len(venues)}** venues  |  "
-            f"📞 Contact info: **{with_contact}/{len(venues)}** venues"
+        st.error(
+            f"🔍 **No data found** — no venues found within {radius_km_used} km"
+            + (f" matching your venue hire budget of {budget_currency}{venue_hire_budget:,.0f}" if venue_hire_budget else "")
+            + ". Try expanding your search radius, adjusting your budget, or adding more venue categories."
         )
+    else:
+        # ── Budget-based venue split ───────────────────────────────────────────
+        if venue_hire_budget > 0:
+            within_budget = [v for v in venues if v.get("within_hire_budget")]
+            no_price      = [v for v in venues if not v.get("within_hire_budget") and not v.get("over_hire_budget")]
+            over_budget   = [v for v in venues if v.get("over_hire_budget")]
+        else:
+            within_budget, no_price, over_budget = [], venues, []
 
-        # JSON download button
+        # ── Top-level metrics ──────────────────────────────────────────────────
+        col_a, col_b, col_c, col_d = st.columns(4)
+        col_a.metric("Total venues", len(venues))
+        if radius_km_used and radius_km_used != requested_radius:
+            col_b.metric("Radius used", f"{radius_km_used} km", delta=f"+{radius_km_used - requested_radius} km")
+        else:
+            col_b.metric("Radius used", f"{radius_km_used} km")
+        if venue_hire_budget > 0:
+            col_c.metric("✅ Within budget", len(within_budget))
+            col_d.metric("❌ Over budget", len(over_budget))
+        else:
+            with_cap = sum(1 for v in venues if v.get("capacity"))
+            with_contact = sum(1 for v in venues if v.get("phone") or v.get("email") or v.get("website"))
+            col_c.metric("With capacity data", with_cap)
+            col_d.metric("With contact info", with_contact)
+
+        if venue_hire_budget > 0:
+            st.success(
+                f"💷 Venue hire budget: **{budget_currency}{venue_hire_budget:,.0f}** (35% of total) · "
+                f"**{len(within_budget)}** venues within budget · "
+                f"**{len(no_price)}** price unknown · "
+                f"**{len(over_budget)}** over budget (hidden below)"
+            )
+            if not within_budget and not no_price:
+                st.warning(
+                    f"No venues found within your venue hire budget of {budget_currency}{venue_hire_budget:,.0f}. "
+                    "All fetched venues exceed this budget — showing them below for reference."
+                )
+
         st.download_button(
             label="⬇️ Download venues as JSON",
             data=json.dumps(venues, indent=2, ensure_ascii=False),
@@ -537,29 +780,39 @@ if st.session_state["sp_venues"] is not None:
 
         budget_str = reqs.get("budget") or ""
 
-        # ── Budget split ───────────────────────────────────────────────────────
+        # ── Budget split table ─────────────────────────────────────────────────
         currency, budget_amount = _parse_budget_amount(budget_str)
         budget_data = st.session_state.get("sp_budget")
         if budget_amount > 0 and budget_data and budget_data.get("breakdown"):
             with st.expander(f"💰 Suggested Budget Split — {budget_str} total", expanded=True):
                 tool_badge(budget_data.get("tool_source", "local"), budget_data.get("tool_name", "local_budget_planner"))
-                rows = [
-                    {
+                rows = []
+                for item in budget_data["breakdown"]:
+                    row = {
                         "Category": item["category"],
                         "% of Budget": item["percentage"],
                         f"Amount ({budget_data.get('currency', currency)})": item["display"],
                     }
-                    for item in budget_data["breakdown"]
-                ]
+                    if "Venue" in item["category"]:
+                        row["Category"] = f"🏛️ {item['category']} ← your search limit"
+                    rows.append(row)
                 st.dataframe(rows, use_container_width=True, hide_index=True)
                 if budget_data.get("note"):
                     st.caption(budget_data["note"])
             st.markdown("---")
 
         # ── Capacity filter ────────────────────────────────────────────────────
+        # Determine display pool: budget-within + no-price (+ over-budget if nothing else)
+        if venue_hire_budget > 0:
+            pool = within_budget + no_price
+            if not pool:
+                pool = over_budget  # nothing better — show all with a note
+        else:
+            pool = venues
+
         if required_guests:
             suitable, unknown_cap, too_small = [], [], []
-            for v in venues:
+            for v in pool:
                 total = _parse_first_num(v.get("capacity"))
                 if total == 0:
                     unknown_cap.append(v)
@@ -569,74 +822,182 @@ if st.session_state["sp_venues"] is not None:
                     too_small.append(v)
             display_venues = suitable + unknown_cap
             fc1, fc2, fc3 = st.columns(3)
-            fc1.metric("✅ Fits your guest count", len(suitable))
+            fc1.metric("✅ Fits guest count", len(suitable))
             fc2.metric("❓ Capacity unknown", len(unknown_cap))
             fc3.metric("❌ Too small (hidden)", len(too_small))
         else:
-            display_venues = venues
+            display_venues = pool
+
+        if not display_venues:
+            st.warning("🔍 **No data found** matching all your filters. Try relaxing budget or guest count constraints.")
 
         st.markdown("---")
 
-        # ── Venue cards ────────────────────────────────────────────────────────
+        # ── Top 10 Best Matches ────────────────────────────────────────────────
         if display_venues:
-            CARDS_PER_PAGE = 12
-            if "sp_venue_page" not in st.session_state:
-                st.session_state["sp_venue_page"] = 0
+            required_facilities = reqs.get("required_facilities") or st.session_state.get("sp_req_facilities") or []
 
-            total_pages = max(1, (len(display_venues) - 1) // CARDS_PER_PAGE + 1)
-            current_page = min(st.session_state["sp_venue_page"], total_pages - 1)
+            # Score every venue then take top 10
+            scored = []
+            for v in display_venues:
+                sc, mf = _score_venue(v, required_guests or 0, venue_hire_budget, required_facilities)
+                scored.append((sc, mf, v))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            top10 = scored[:10]
 
-            pg_c1, pg_c2, pg_c3 = st.columns([1, 4, 1])
-            if pg_c1.button("◀ Prev", disabled=current_page == 0, key="prev_page"):
-                st.session_state["sp_venue_page"] = current_page - 1
-                st.rerun()
-            pg_c2.markdown(
-                f"<div style='text-align:center;padding-top:8px;'>Showing "
-                f"<b>{current_page * CARDS_PER_PAGE + 1}–{min((current_page + 1) * CARDS_PER_PAGE, len(display_venues))}</b> "
-                f"of <b>{len(display_venues)}</b> · Page {current_page + 1}/{total_pages}</div>",
+            fac_hint = (f" · facilities: {', '.join(required_facilities)}" if required_facilities else "")
+            st.markdown(
+                f"### 🏆 Top 10 Best Matches"
+                f"<br><small style='color:grey'>Ranked by: capacity fit · budget · contact info{fac_hint}</small>",
                 unsafe_allow_html=True,
             )
-            if pg_c3.button("Next ▶", disabled=current_page >= total_pages - 1, key="next_page"):
-                st.session_state["sp_venue_page"] = current_page + 1
-                st.rerun()
 
-            page_venues = display_venues[
-                current_page * CARDS_PER_PAGE:(current_page + 1) * CARDS_PER_PAGE
-            ]
-            page_offset = current_page * CARDS_PER_PAGE
-            for i in range(0, len(page_venues), 2):
-                c1, c2 = st.columns(2)
-                with c1:
-                    _render_venue_card(page_venues[i], idx=page_offset + i, required_guests=required_guests or 0)
-                if i + 1 < len(page_venues):
-                    with c2:
-                        _render_venue_card(page_venues[i + 1], idx=page_offset + i + 1, required_guests=required_guests or 0)
+            for rank, (sc, mf, v) in enumerate(top10, 1):
+                cap_num = _parse_first_num(v.get("capacity", ""))
+                cap_ok  = cap_num >= (required_guests or 1) if cap_num > 0 else None
+                bud_ok  = v.get("within_hire_budget")
+                bud_unknown = v.get("parsed_price") is None and venue_hire_budget > 0
 
-        # ── Index button ───────────────────────────────────────────────────────
+                # Status dot
+                if cap_ok and (bud_ok or not venue_hire_budget):
+                    dot = "🟢"
+                elif cap_ok or bud_ok:
+                    dot = "🟡"
+                else:
+                    dot = "🔵"
+
+                with st.container(border=True):
+                    col_rk, col_info = st.columns([1, 9])
+                    col_rk.markdown(
+                        f"<div style='font-size:2rem;font-weight:bold;text-align:center;padding-top:6px'>"
+                        f"#{rank}</div><div style='text-align:center'>{dot}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    with col_info:
+                        name_line = f"**{v.get('name', 'Unknown Venue')}**"
+                        addr = v.get("address") or ""
+                        if addr:
+                            name_line += f"  ·  📍 {addr[:80]}"
+                        st.markdown(name_line)
+
+                        tags = []
+                        if v.get("capacity"):
+                            tags.append(f"👥 {v['capacity']}" + (" ✅" if cap_ok else (" ⚠️ too small" if cap_ok is False else "")))
+                        # Price: use parsed_price or canvas_price_guide
+                        from_price = (v.get("canvas_price_guide") or {}).get("from_price")
+                        if v.get("parsed_price"):
+                            price_lbl = f"💷 £{v['parsed_price']:,.0f}/day"
+                            price_lbl += " ✅ within budget" if bud_ok else (" ❌ over budget" if v.get("over_hire_budget") else "")
+                            tags.append(price_lbl)
+                        elif from_price:
+                            tags.append(f"💷 {from_price}" + (" ✅" if bud_ok else ("" if bud_unknown else "")))
+                        elif venue_hire_budget > 0:
+                            tags.append("💷 Price: contact venue")
+                        if mf:
+                            tags.append(f"🎯 {', '.join(mf)}")
+                        if v.get("event_type_match"):
+                            tags.append("✅ Matches event type")
+                        st.markdown("  ·  ".join(tags) if tags else "📋 Contact venue for full details")
+
+                        ct_parts = []
+                        if v.get("website"):
+                            ct_parts.append(f"[🌐 Website]({v['website']})")
+                        if v.get("phone"):
+                            ct_parts.append(f"📞 `{v['phone']}`")
+                        if v.get("email"):
+                            ct_parts.append(f"✉️ `{v['email']}`")
+                        if ct_parts:
+                            st.markdown("  |  ".join(ct_parts))
+
+            st.markdown("---")
+
+            # ── All matching venues (paginated) ────────────────────────────────
+            with st.expander(f"📋 All {len(display_venues)} matching venues", expanded=False):
+                CARDS_PER_PAGE = 12
+                if "sp_venue_page" not in st.session_state:
+                    st.session_state["sp_venue_page"] = 0
+
+                total_pages = max(1, (len(display_venues) - 1) // CARDS_PER_PAGE + 1)
+                current_page = min(st.session_state["sp_venue_page"], total_pages - 1)
+
+                pg_c1, pg_c2, pg_c3 = st.columns([1, 4, 1])
+                if pg_c1.button("◀ Prev", disabled=current_page == 0, key="prev_page"):
+                    st.session_state["sp_venue_page"] = current_page - 1
+                    st.rerun()
+                pg_c2.markdown(
+                    f"<div style='text-align:center;padding-top:8px;'>Showing "
+                    f"<b>{current_page * CARDS_PER_PAGE + 1}–{min((current_page + 1) * CARDS_PER_PAGE, len(display_venues))}</b> "
+                    f"of <b>{len(display_venues)}</b> · Page {current_page + 1}/{total_pages}</div>",
+                    unsafe_allow_html=True,
+                )
+                if pg_c3.button("Next ▶", disabled=current_page >= total_pages - 1, key="next_page"):
+                    st.session_state["sp_venue_page"] = current_page + 1
+                    st.rerun()
+
+                page_venues = display_venues[
+                    current_page * CARDS_PER_PAGE:(current_page + 1) * CARDS_PER_PAGE
+                ]
+                page_offset = current_page * CARDS_PER_PAGE
+                for i in range(0, len(page_venues), 2):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        _render_venue_card(page_venues[i], idx=page_offset + i, required_guests=required_guests or 0)
+                    if i + 1 < len(page_venues):
+                        with c2:
+                            _render_venue_card(page_venues[i + 1], idx=page_offset + i + 1, required_guests=required_guests or 0)
+
+        # ── Index buttons ──────────────────────────────────────────────────────
         st.markdown("---")
         slug = reqs.get("collection_slug", "my_event") or "my_event"
         event_name = reqs.get("event_name", "Event Plan")
         city = reqs.get("city", reqs.get("location_hint", ""))
+        ev_type_for_index = reqs.get("event_type", "") or ""
 
-        st.markdown(f"**Collection name:** `evp_u{st.session_state['user_id']}_{slug[:20]}`")
+        idx_col1, idx_col2 = st.columns(2)
 
-        if st.button(f"⚡ Index {len(venues)} venues + event brief into collection", type="primary"):
-            with st.spinner("Embedding and indexing everything…"):
-                try:
-                    result = client.index_event_plan(
-                        event_name=event_name,
-                        collection_slug=slug,
-                        document_text=st.session_state["sp_raw_text"] or "",
-                        venues=venues,
-                        city=city,
-                    )
-                    st.session_state["sp_indexed_collection"] = slug
-                    st.success(
-                        f"✅ **{event_name}** indexed! "
-                        f"{len(venues)} venues + event brief are now searchable by the AI."
-                    )
-                except APIError as exc:
-                    st.error(f"Indexing failed: {exc.detail}")
+        with idx_col1:
+            st.markdown(f"**Event plan collection:** `evp_u{st.session_state['user_id']}_{slug[:20]}`")
+            if st.button(f"⚡ Index {len(venues)} venues + event brief", type="primary", key="idx_plan"):
+                with st.spinner("Embedding and indexing everything…"):
+                    try:
+                        client.index_event_plan(
+                            event_name=event_name,
+                            collection_slug=slug,
+                            document_text=st.session_state["sp_raw_text"] or "",
+                            venues=venues,
+                            city=city,
+                        )
+                        st.session_state["sp_indexed_collection"] = slug
+                        st.success(
+                            f"✅ **{event_name}** indexed! "
+                            f"{len(venues)} venues + brief are now searchable."
+                        )
+                    except APIError as exc:
+                        st.error(f"Indexing failed: {exc.detail}")
+
+        with idx_col2:
+            et_slug = ev_type_for_index.lower().replace(" ", "_")[:20] if ev_type_for_index else "general"
+            uid = st.session_state.get("user_id", 0)
+            st.markdown(f"**Event-type collection:** `evt_u{uid}_{et_slug}`")
+            label = ev_type_for_index.title() if ev_type_for_index else "General"
+            if st.button(
+                f"🎯 Index to **{label}** event-type collection",
+                key="idx_event_type",
+                help="Stores rich text + raw JSON chunks per venue, grouped by event type",
+            ):
+                with st.spinner(f"Indexing {len(venues)} venues into '{label}' collection…"):
+                    try:
+                        result = client.index_event_type_venues(
+                            event_type=ev_type_for_index or "general",
+                            city=city,
+                            venues=venues,
+                        )
+                        st.success(
+                            f"✅ **{len(venues)} venues** indexed into `evt_u{uid}_{et_slug}` — "
+                            f"visible in **Data Indexing → By Event Type**."
+                        )
+                    except APIError as exc:
+                        st.error(f"Indexing failed: {exc.detail}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

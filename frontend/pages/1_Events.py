@@ -1,3 +1,4 @@
+import json
 import streamlit as st
 from datetime import datetime, date, time
 
@@ -14,11 +15,51 @@ client = get_client()
 
 CATEGORIES = ["Conference", "Wedding", "Birthday", "Graduation", "Concert", "Party", "Corporate", "Other"]
 
+
+def _brief_summary(brief_json: str) -> str:
+    try:
+        b = json.loads(brief_json)
+        parts = []
+        if b.get("event_type"):
+            parts.append(b["event_type"].title())
+        if b.get("guest_count"):
+            parts.append(f"{b['guest_count']} guests")
+        if b.get("budget"):
+            parts.append(b["budget"])
+        if b.get("city"):
+            parts.append(b["city"])
+        return " · ".join(parts) if parts else "Brief saved"
+    except Exception:
+        return "Brief saved"
+
+
+def _catering_summary(catering_json: str) -> str:
+    try:
+        c = json.loads(catering_json)
+        groups = c.get("groups") or []
+        total = c.get("total_headcount") or sum(g.get("count", 0) for g in groups)
+        budget = c.get("budget")
+        loc = c.get("location")
+        parts = []
+        if groups:
+            parts.append(f"{len(groups)} groups")
+        if total:
+            parts.append(f"{total} total guests")
+        if budget:
+            parts.append(f"£{budget:,.0f}" if isinstance(budget, (int, float)) else str(budget))
+        if loc:
+            parts.append(loc)
+        return " · ".join(parts) if parts else "Catering brief saved"
+    except Exception:
+        return "Catering brief saved"
+
+
 tab_mine, tab_shared, tab_create = st.tabs(["My Events", "Shared Events", "Create Event"])
 
 # ── Create Event ──────────────────────────────────────────────────────────────
 with tab_create:
     st.subheader("Create a New Event")
+
     with st.form("create_event_form"):
         title = st.text_input("Event Title *", placeholder="e.g., Annual Team Meeting")
         col1, col2 = st.columns(2)
@@ -29,14 +70,39 @@ with tab_create:
             event_time = st.time_input("Time *", value=time(9, 0))
             is_shared = st.checkbox("Share with other users")
         location = st.text_input("Location", placeholder="e.g., London, UK")
-        description = st.text_area("Description", placeholder="Event details…", height=100)
+        description = st.text_area("Description", placeholder="Event details…", height=80)
+
+        st.markdown("---")
+        st.markdown("**📝 Planning Brief** *(optional)*")
+        brief_file = st.file_uploader(
+            "Upload brief file (PDF / DOCX / TXT) — content used as planning brief",
+            type=["pdf", "docx", "txt"],
+            key="create_brief_file",
+        )
+        brief_text = st.text_area(
+            "Or paste / type planning brief here",
+            height=100,
+            key="create_brief_text",
+            placeholder="e.g. Corporate conference for 250 guests in Camden, budget £32,500, date 22 Jul 2026, AV equipment needed",
+        )
+
+        st.markdown("**🍱 Catering Requirements** *(optional)*")
+        catering_text = st.text_area(
+            "Catering requirements",
+            height=80,
+            key="create_catering_text",
+            placeholder="e.g. 200 guests: 50 vegan, 100 halal non-veg, 50 vegetarian, budget £3,000, London",
+        )
+
         create_submitted = st.form_submit_button("Create Event", type="primary", use_container_width=True)
 
     if create_submitted:
-        if title:
+        if not title:
+            st.warning("Event title is required.")
+        else:
             try:
                 dt_str = datetime.combine(event_date, event_time).isoformat()
-                client.create_event(
+                new_event = client.create_event(
                     title=title,
                     date_time=dt_str,
                     description=description or None,
@@ -44,12 +110,46 @@ with tab_create:
                     category=category,
                     is_shared=is_shared,
                 )
-                st.success(f"Event '{title}' created!")
+
+                # Extract file text once — used for BOTH planning brief and catering
+                file_text = ""
+                if brief_file is not None:
+                    try:
+                        with st.spinner("Extracting text from uploaded file…"):
+                            file_text = client.extract_text_from_file(brief_file.read(), brief_file.name)
+                    except APIError as exc:
+                        st.warning(f"File extraction failed ({exc.detail}) — using text box content only.")
+
+                # Planning brief = file text + brief text box (combined)
+                actual_brief = (
+                    (file_text + ("\n\n" + brief_text if brief_text.strip() else "")).strip()
+                    if file_text else brief_text.strip()
+                )
+                # Catering = file text + catering text box (combined)
+                actual_catering = (
+                    (file_text + ("\n\n" + catering_text if catering_text.strip() else "")).strip()
+                    if file_text else catering_text.strip()
+                )
+
+                if actual_brief:
+                    with st.spinner("AI is extracting planning requirements…"):
+                        try:
+                            client.save_event_brief(new_event["id"], actual_brief)
+                        except APIError as exc:
+                            st.warning(f"Brief extraction failed: {exc.detail}")
+
+                if actual_catering:
+                    with st.spinner("AI is extracting catering requirements…"):
+                        try:
+                            client.save_event_catering_brief(new_event["id"], actual_catering)
+                        except APIError as exc:
+                            st.warning(f"Catering extraction failed: {exc.detail}")
+
+                badges = (" 📝" if actual_brief else "") + (" 🍱" if actual_catering else "")
+                st.success(f"✅ Event **{title}** created!{badges} Go to **My Events** to view or update.")
                 st.rerun()
             except APIError as exc:
                 st.error(f"Error: {exc.detail}")
-        else:
-            st.warning("Event title is required.")
 
 # ── My Events ─────────────────────────────────────────────────────────────────
 with tab_mine:
@@ -74,7 +174,7 @@ with tab_mine:
         events = []
 
     if not events:
-        st.info("No events yet. Create your first event in the 'Create Event' tab!")
+        st.info("No events yet. Create your first event in the **Create Event** tab!")
     else:
         st.markdown(f"**{len(events)} event(s)**")
 
@@ -83,12 +183,18 @@ with tab_mine:
 
         for event in events:
             dt = datetime.fromisoformat(event["date_time"].replace("Z", "+00:00")) if isinstance(event["date_time"], str) else event["date_time"]
+            has_brief = bool(event.get("brief_json"))
+            has_catering = bool(event.get("catering_json"))
+            brief_badge = " 📝" if has_brief else ""
+            catering_badge = " 🍱" if has_catering else ""
             header = (
-                f"{'🌐' if event['is_shared'] else '🔒'} **{event['title']}** "
+                f"{'🌐' if event['is_shared'] else '🔒'} **{event['title']}**{brief_badge}{catering_badge} "
                 f"— {dt.strftime('%d %b %Y, %H:%M')} | {event['category']}"
             )
+
             with st.expander(header):
                 if event["id"] == st.session_state["edit_event_id"]:
+                    # ── Edit form ──────────────────────────────────────────────
                     with st.form(f"edit_form_{event['id']}"):
                         new_title = st.text_input("Title", value=event["title"])
                         col1, col2 = st.columns(2)
@@ -130,6 +236,7 @@ with tab_mine:
                         st.rerun()
 
                 else:
+                    # ── View mode ──────────────────────────────────────────────
                     if event["description"]:
                         st.markdown(event["description"])
 
@@ -166,6 +273,108 @@ with tab_mine:
                             if st.button("Cancel", key=f"no_{event['id']}"):
                                 st.session_state.pop(f"confirm_del_{event['id']}", None)
                                 st.rerun()
+
+                    st.markdown("---")
+
+                    # ── AI Planning Brief section ──────────────────────────────
+                    brief_label = (
+                        f"📝 AI Planning Brief — {_brief_summary(event['brief_json'])}"
+                        if has_brief else "📝 AI Planning Brief"
+                    )
+                    with st.expander(brief_label, expanded=not has_brief):
+                        if has_brief:
+                            try:
+                                saved = json.loads(event["brief_json"])
+                                bcol1, bcol2 = st.columns(2)
+                                with bcol1:
+                                    st.markdown(f"**Event type:** {saved.get('event_type','—')}")
+                                    st.markdown(f"**City:** {saved.get('city','—')}")
+                                    st.markdown(f"**Location hint:** {saved.get('location_hint','—')}")
+                                    st.markdown(f"**Guest count:** {saved.get('guest_count','—')}")
+                                with bcol2:
+                                    st.markdown(f"**Budget:** {saved.get('budget','—')}")
+                                    st.markdown(f"**Date:** {saved.get('event_date','—')}")
+                                    st.markdown(f"**Radius:** {saved.get('radius_km','—')} km")
+                                    cats = ", ".join(saved.get("categories") or []) or "—"
+                                    st.markdown(f"**Categories:** {cats}")
+                                st.caption("Use the Smart Planner to fetch venues using this brief →")
+                            except Exception:
+                                st.warning("Brief data is malformed — please re-enter below.")
+                            st.markdown("---")
+
+                        st.markdown("**Update planning brief:**" if has_brief else "**Add planning brief to this event:**")
+                        st.caption("Paste your planning brief as text. To upload a file, use the **Create Event** tab.")
+                        update_brief = st.text_area(
+                            "Planning brief text",
+                            height=100,
+                            key=f"update_brief_{event['id']}",
+                            placeholder="e.g. Corporate conference for 250 guests in Camden, budget £32,500, date 22 Jul 2026",
+                        )
+                        if st.button("✨ Extract & Save Brief", key=f"save_brief_{event['id']}", type="primary"):
+                            if not update_brief.strip():
+                                st.warning("Please paste some planning brief text first.")
+                            else:
+                                with st.spinner("AI is extracting requirements…"):
+                                    try:
+                                        client.save_event_brief(event["id"], update_brief)
+                                        st.success("✅ Planning brief saved!")
+                                        st.rerun()
+                                    except APIError as exc:
+                                        st.error(f"Failed: {exc.detail}")
+
+                    # ── Catering Requirements section ──────────────────────────
+                    cater_label = (
+                        f"🍱 Catering Requirements — {_catering_summary(event['catering_json'])}"
+                        if has_catering else "🍱 Catering Requirements"
+                    )
+                    with st.expander(cater_label, expanded=False):
+                        if has_catering:
+                            try:
+                                saved_c = json.loads(event["catering_json"])
+                                groups = saved_c.get("groups") or []
+                                if groups:
+                                    rows = [
+                                        {
+                                            "Group": g.get("label", ""),
+                                            "Count": g.get("count", ""),
+                                            "Dietary": g.get("dietary_type", ""),
+                                        }
+                                        for g in groups
+                                    ]
+                                    st.dataframe(rows, use_container_width=True, hide_index=True)
+                                c1, c2 = st.columns(2)
+                                if saved_c.get("budget"):
+                                    c1.metric(
+                                        "Budget",
+                                        f"£{saved_c['budget']:,.0f}" if isinstance(saved_c["budget"], (int, float)) else saved_c["budget"],
+                                    )
+                                if saved_c.get("location"):
+                                    c2.metric("Location", saved_c["location"])
+                                st.caption("Use the Catering Planner to find matching vendors using this brief →")
+                            except Exception:
+                                st.warning("Catering data is malformed — please re-enter below.")
+                            st.markdown("---")
+
+                        st.markdown("**Update catering requirements:**" if has_catering else "**Attach catering requirements to this event:**")
+                        st.caption("Paste your catering requirements as text. To upload a file, use the **Create Event** tab.")
+                        update_catering = st.text_area(
+                            "Catering requirements text",
+                            height=100,
+                            key=f"update_catering_{event['id']}",
+                            placeholder="e.g. 200 guests: 50 vegan, 100 halal non-veg, 50 vegetarian, budget £3,000, London",
+                        )
+                        if st.button("✨ Extract & Save Catering", key=f"save_cater_{event['id']}", type="primary"):
+                            if not update_catering.strip():
+                                st.warning("Please paste some catering requirements text first.")
+                            else:
+                                with st.spinner("AI is extracting catering requirements…"):
+                                    try:
+                                        client.save_event_catering_brief(event["id"], update_catering)
+                                        st.success("✅ Catering requirements saved!")
+                                        st.rerun()
+                                    except APIError as exc:
+                                        st.error(f"Failed: {exc.detail}")
+
 
 # ── Shared Events ─────────────────────────────────────────────────────────────
 with tab_shared:
