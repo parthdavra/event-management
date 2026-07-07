@@ -46,7 +46,29 @@ def rag_chat(
         else:
             collections = indexing_service.get_all_user_collections(db, current_user.id)
 
-        docs = rag_service.query_multiple_collections(collections, body.query, n_per_collection=3)
+        # Rewrite the query to be self-contained using conversation history,
+        # so ChromaDB retrieval resolves references like "the second venue" correctly.
+        search_query = rag_service.rewrite_query_with_history(body.query, history)
+
+        # Parse capacity / budget constraints from the query for smart metadata filtering
+        constraints = rag_service.parse_query_constraints(search_query)
+        min_cap = constraints.get("capacity")
+        # Capacity window: requested N → show N to N+150 (hard cap at 400 when N <= 250)
+        max_cap = None
+        if min_cap is not None:
+            window = 150 if min_cap > 250 else (400 - min_cap)
+            max_cap = min_cap + max(window, 0)
+
+        n_per = max(body.n_results or 5, 8)  # at least 8 for richer retrieval
+        docs = rag_service.query_with_smart_filters(
+            collections,
+            search_query,
+            n_per_collection=n_per,
+            min_capacity=min_cap,
+            max_capacity=max_cap,
+            max_budget=constraints.get("budget"),
+        )
+        # Generate the answer using the ORIGINAL user query + full history for natural response
         result = rag_service.generate_rag_response_json(body.query, docs, history)
         return RagResponse(**result)
     except Exception as exc:

@@ -2,22 +2,30 @@
 import streamlit as st
 
 _SOURCE_ICONS: dict[str, str] = {
-    "Canvas Events": "🎪",
-    "Foursquare":    "📍",
-    "OpenStreetMap": "🗺️",
-    "Geoapify":      "🌐",
+    "Canvas Events":   "🎪",
+    "Foursquare":      "📍",
+    "OpenStreetMap":   "🗺️",
+    "Geoapify":        "🌐",
+    "Indexed Chunks":  "🗄️",
 }
 
 _TOOL_ICONS: dict[str, str] = {
-    "mcp":   "🟢",
-    "local": "🔵",
+    "mcp":    "🟢",
+    "local":  "🔵",
+    "chunks": "🗄️",
+}
+
+_TOOL_LABELS: dict[str, str] = {
+    "mcp":    "MCP Tool",
+    "local":  "Local API",
+    "chunks": "Indexed Chunks",
 }
 
 
 def tool_badge(tool_source: str, tool_name: str) -> None:
-    """Show which backend tool (MCP or local) served the request."""
+    """Show which backend tool served the request."""
     icon = _TOOL_ICONS.get(tool_source, "🔵")
-    label = "MCP Tool" if tool_source == "mcp" else "Local"
+    label = _TOOL_LABELS.get(tool_source, "Local")
     st.caption(f"{icon} **{label}:** `{tool_name}`")
 
 

@@ -232,7 +232,7 @@ def get_catering_profile(event_type: str) -> Dict:
 
 
 def venue_to_text(v: Dict, city: str) -> str:
-    """Convert a venue dict to an indexable text chunk."""
+    """Convert a venue dict to an indexable text chunk (includes Canvas rich data)."""
     parts = [f"Venue: {v.get('name', 'Unknown')}"]
     if v.get("type"):
         parts.append(f"Type: {v['type']}")
@@ -263,7 +263,49 @@ def venue_to_text(v: Dict, city: str) -> str:
         parts.append(f"Wheelchair access: {v['wheelchair']}")
     if v.get("stars"):
         parts.append(f"Stars: {v['stars']}")
+    if v.get("price_range"):
+        parts.append(f"Price range: {v['price_range']}")
+    if v.get("price_per_day"):
+        parts.append(f"Day hire: {v['price_per_day']}")
     parts.append(f"Source: {v.get('source', 'unknown')}")
+
+    # ── Canvas Events rich data ───────────────────────────────────────────────
+    cap_detail = v.get("canvas_capacity_detail") or {}
+    if cap_detail:
+        caps = ", ".join(
+            f"{k.title()}: {int(val):,}" for k, val in cap_detail.items() if val
+        )
+        if caps:
+            parts.append(f"Capacity breakdown: {caps}")
+
+    price_guide = v.get("canvas_price_guide") or {}
+    if price_guide.get("from_price"):
+        parts.append(f"Starting from: {price_guide['from_price']}")
+    days = price_guide.get("days") or {}
+    if days:
+        day_prices = "; ".join(f"{d}: {p}" for d, p in days.items() if p != "Closed")
+        if day_prices:
+            parts.append(f"Price guide: {day_prices}")
+
+    perfect_for = v.get("canvas_perfect_for") or []
+    if perfect_for:
+        parts.append(f"Perfect for: {', '.join(perfect_for[:15])}")
+
+    spaces = v.get("canvas_spaces") or []
+    if spaces:
+        space_names = ", ".join(s.get("name", "") for s in spaces if s.get("name"))
+        if space_names:
+            parts.append(f"Available spaces: {space_names}")
+
+    features = v.get("canvas_features") or {}
+    for cat, items in features.items():
+        if items:
+            parts.append(f"{cat}: {', '.join(items[:10])}")
+
+    event_types = v.get("event_types") or []
+    if event_types:
+        parts.append(f"Event types: {', '.join(event_types[:15])}")
+
     return "\n".join(parts)
 
 
@@ -632,6 +674,49 @@ def fetch_foursquare_venues(
         return []
 
 
+def _parse_venue_price(v: Dict) -> Optional[float]:
+    """Return the best numeric day-hire price estimate for a venue, or None if unknown."""
+    def _first_number(s: str) -> Optional[float]:
+        nums = re.findall(r"[\d,]+", s.replace(",", ""))
+        return float(nums[0]) if nums else None
+
+    # Priority 1: Canvas price guide "from_price" — most reliable
+    pg = v.get("canvas_price_guide") or {}
+    if pg.get("from_price"):
+        n = _first_number(pg["from_price"])
+        if n:
+            return n
+
+    # Priority 2: cheapest Canvas space price
+    for space in (v.get("canvas_spaces") or []):
+        n = _first_number(space.get("price_per_day") or "")
+        if n:
+            return n
+
+    # Priority 3: price_per_day field
+    if v.get("price_per_day"):
+        n = _first_number(v["price_per_day"])
+        if n:
+            return n
+
+    # Priority 4: min_spend (lower bound — venue may still be affordable)
+    if v.get("min_spend"):
+        n = _first_number(v["min_spend"])
+        if n:
+            return n
+
+    return None
+
+
+def _tag_budget(venues: List[Dict], venue_hire_budget: float) -> None:
+    """Mutate each venue dict in-place to add within_hire_budget / parsed_price."""
+    for v in venues:
+        price = _parse_venue_price(v)
+        v["parsed_price"] = price
+        v["within_hire_budget"] = bool(price is not None and price <= venue_hire_budget)
+        v["over_hire_budget"] = bool(price is not None and price > venue_hire_budget)
+
+
 def _deduplicate(venues: List[Dict]) -> List[Dict]:
     seen: set = set()
     unique: List[Dict] = []
@@ -654,12 +739,14 @@ def fetch_all_city_venues(
     coords: Optional[Tuple[float, float]] = None,
     event_type: str = "",
     max_radius_km: int = 25,
+    venue_hire_budget: float = 0,
 ) -> Tuple[List[Dict], Dict[str, int], int]:
     """
     Returns (venues, source_counts, radius_km_used).
-    Auto-expands search radius by 1 km per step (up to max_radius_km) until
-    at least one venue is found.  For Canvas cities this is free — just a
-    re-filter of cached data.
+
+    Auto-expands search radius by 1 km per step (up to max_radius_km) until:
+    - At least one venue is found, AND
+    - If venue_hire_budget > 0: at least one venue is within that budget.
     """
     if coords is None:
         coords = get_city_coords(city)
@@ -669,6 +756,7 @@ def fetch_all_city_venues(
 
     is_canvas = canvas_service.is_canvas_city(city)
     current_radius = radius_km
+    last_source_counts: Dict[str, int] = {}
 
     while current_radius <= max_radius_km:
         radius_m = current_radius * 1000
@@ -690,6 +778,11 @@ def fetch_all_city_venues(
             if canvas_venues:
                 source_counts["Canvas Events"] = len(canvas_venues)
                 deduped = _deduplicate(canvas_venues)
+                # Tag budget for informational display on frontend — never gate expansion on it
+                # (Canvas basic listing rarely includes pricing; expansion should only happen
+                # when there are literally zero venues at the requested radius)
+                if venue_hire_budget > 0:
+                    _tag_budget(deduped, venue_hire_budget)
                 return deduped[:max_venues], source_counts, current_radius
 
             source_counts["Canvas Events"] = 0
@@ -714,13 +807,16 @@ def fetch_all_city_venues(
 
             deduped = _deduplicate(all_venues)
             if deduped:
+                if venue_hire_budget > 0:
+                    _tag_budget(deduped, venue_hire_budget)
                 return deduped[:max_venues], source_counts, current_radius
 
-        # No results at current_radius — expand by 1 km
-        current_radius += 1
+        last_source_counts = source_counts
+        # Zero venues found at this radius — expand by 2 km and retry
+        current_radius += 2
 
     # Exhausted max_radius — return empty with the last radius tried
-    return [], source_counts, current_radius - 1
+    return [], last_source_counts, current_radius - 2
 
 
 # ── Public service functions ──────────────────────────────────────────────────
@@ -741,6 +837,7 @@ def fetch_venues(body: VenueSearchRequest) -> VenueSearchResponse:
         coords=coords,
         event_type=body.event_type,
         max_radius_km=body.max_radius_km,
+        venue_hire_budget=body.venue_hire_budget,
     )
     return VenueSearchResponse(
         city=body.city,

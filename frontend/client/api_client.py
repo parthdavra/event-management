@@ -119,6 +119,22 @@ class EventManagementClient:
     def delete_event(self, event_id: int) -> None:
         self._request("DELETE", f"/events/{event_id}")
 
+    def save_event_brief(self, event_id: int, text: str) -> Dict:
+        """Extract AI planning requirements from text and save to event.brief_json."""
+        return self._request(
+            "POST", f"/events/{event_id}/brief",
+            timeout=LONG_TIMEOUT,
+            json={"text": text},
+        )
+
+    def save_event_catering_brief(self, event_id: int, text: str) -> Dict:
+        """Extract AI catering requirements from text and save to event.catering_json."""
+        return self._request(
+            "POST", f"/events/{event_id}/catering-brief",
+            timeout=LONG_TIMEOUT,
+            json={"text": text},
+        )
+
     # ── Chat ─────────────────────────────────────────────────────────────────
 
     def get_messages(
@@ -148,6 +164,7 @@ class EventManagementClient:
         max_venues: int = 300,
         event_type: str = "",
         max_radius_km: int = 25,
+        venue_hire_budget: float = 0,
     ) -> Dict:
         return self._request(
             "POST",
@@ -163,6 +180,7 @@ class EventManagementClient:
                 "max_venues": max_venues,
                 "event_type": event_type,
                 "max_radius_km": max_radius_km,
+                "venue_hire_budget": venue_hire_budget,
             },
         )
 
@@ -299,6 +317,64 @@ class EventManagementClient:
             json={"city": city, "venues": venues, "replace_existing": replace_existing},
         )
 
+    def bulk_index_event_types(
+        self,
+        cities: List[str],
+        event_types: List[str],
+        categories: List[str],
+        radius_km: int = 5,
+        max_venues_per_city: int = 300,
+        replace_existing: bool = True,
+    ) -> Dict:
+        """Start bulk indexing in a background job. Returns {job_id, status}."""
+        return self._request(
+            "POST",
+            "/indexing/bulk-event-types",
+            timeout=30.0,
+            json={
+                "cities": cities,
+                "event_types": event_types,
+                "categories": categories,
+                "radius_km": radius_km,
+                "max_venues_per_city": max_venues_per_city,
+                "replace_existing": replace_existing,
+            },
+        )
+
+    def get_bulk_index_job(self, job_id: str) -> Dict:
+        """Poll for bulk-index job status. Returns {status, result, error}."""
+        return self._request("GET", f"/indexing/bulk-event-types/{job_id}", timeout=15.0)
+
+    def index_from_json(
+        self,
+        venues: List[Dict],
+        event_type: str = "general",
+        city: str = "",
+        replace_existing: bool = True,
+    ) -> Dict:
+        """Enrich Canvas venues from their detail page then index all as chunks."""
+        return self._request(
+            "POST",
+            "/indexing/from-json",
+            timeout=LONG_TIMEOUT,
+            json={"venues": venues, "event_type": event_type, "city": city, "replace_existing": replace_existing},
+        )
+
+    def index_event_type_venues(
+        self,
+        event_type: str,
+        city: str,
+        venues: List[Dict],
+        replace_existing: bool = True,
+    ) -> Dict:
+        """Index venues into a per-event-type collection (rich text + raw JSON chunks)."""
+        return self._request(
+            "POST",
+            "/indexing/event-type",
+            timeout=LONG_TIMEOUT,
+            json={"event_type": event_type, "city": city, "venues": venues, "replace_existing": replace_existing},
+        )
+
     def index_event_plan(
         self,
         event_name: str,
@@ -318,6 +394,78 @@ class EventManagementClient:
                 "venues": venues,
                 "city": city,
             },
+        )
+
+    def scrape_and_index_feedr(
+        self,
+        city: str,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+        replace_existing: bool = True,
+    ) -> Dict:
+        """Start Feedr.co fetch + index job via CaterDesk GraphQL API. Returns {job_id, status}."""
+        payload: Dict[str, Any] = {
+            "city": city,
+            "replace_existing": replace_existing,
+        }
+        if lat is not None:
+            payload["lat"] = lat
+        if lon is not None:
+            payload["lon"] = lon
+        return self._request("POST", "/indexing/feedr", timeout=30.0, json=payload)
+
+    def get_feedr_job(self, job_id: str) -> Dict:
+        """Poll Feedr scraping job status. Returns {status, result, error}."""
+        return self._request("GET", f"/indexing/feedr/{job_id}", timeout=15.0)
+
+    def parse_catering_file(self, file_bytes: bytes, filename: str) -> Dict:
+        """Upload a PDF/DOCX/TXT and extract catering dietary groups, headcount, budget, location via LLM."""
+        files = {"file": (filename, file_bytes, "application/octet-stream")}
+        url = f"{self.base_url}/indexing/parse-catering-file"
+        headers = {k: v for k, v in self._headers.items() if k != "Content-Type"}
+        with httpx.Client(timeout=LONG_TIMEOUT) as http:
+            response = http.post(url, headers=headers, files=files)
+        if not response.is_success:
+            try:
+                detail = response.json().get("detail", response.text)
+            except Exception:
+                detail = response.text
+            raise APIError(response.status_code, detail)
+        return response.json()
+
+    def match_catering_vendors(
+        self,
+        lat: float,
+        lon: float,
+        groups: List[Dict],
+        budget: Optional[float] = None,
+    ) -> Dict:
+        """Find nearby Feedr vendors matched to dietary groups with estimated costs. Returns per-group matches."""
+        payload: Dict[str, Any] = {"lat": lat, "lon": lon, "groups": groups}
+        if budget is not None and budget > 0:
+            payload["budget"] = budget
+        return self._request("POST", "/indexing/catering-match", timeout=LONG_TIMEOUT, json=payload)
+
+    def get_vendor_detail(self, permalink: str) -> Dict:
+        """Fetch full vendor info + complete live menu from Feedr.co. Returns {name, images, menu_items, ...}."""
+        return self._request(
+            "GET",
+            f"/indexing/vendors/detail/{permalink}",
+            timeout=LONG_TIMEOUT,
+        )
+
+    def get_nearby_vendors(
+        self,
+        lat: float,
+        lon: float,
+        max_results: int = 20,
+    ) -> Dict:
+        """Fetch nearby catering vendors from Feedr.co sorted by distance. Returns {vendors, count}."""
+        return self._request(
+            "GET",
+            "/indexing/vendors/nearby",
+            timeout=LONG_TIMEOUT,
+            params={"lat": lat, "lon": lon, "max_results": max_results},
         )
 
     def list_sources(self) -> List[Dict]:

@@ -36,7 +36,9 @@
       "PowerShell(Invoke-RestMethod -Uri \"http://localhost:8000/docs\" 2>&1)",
       "PowerShell(docker port event-management-backend-1)",
       "PowerShell(docker compose -f \"C:\\\\Users\\\\parth\\\\Desktop\\\\week-8\\\\event-management\\\\docker-compose.yml\" restart backend 2>&1)",
-      "PowerShell(docker port event-management-frontend-1)"
+      "PowerShell(docker port event-management-frontend-1)",
+      "PowerShell(docker exec event-management-frontend-1 python3 -c \"import py_compile; py_compile.compile\\('/app/pages/4_Data_Indexing.py'\\); print\\('OK'\\)\" 2>&1)",
+      "PowerShell(docker exec event-management-frontend-1 python3 -c \"import py_compile; py_compile.compile\\('/app/pages/7_Smart_Planner.py'\\); print\\('OK'\\)\" 2>&1)"
     ]
   }
 }

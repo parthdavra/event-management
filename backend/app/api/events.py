@@ -1,3 +1,4 @@
+import json
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -5,7 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_current_user
 from app.models.user import User
-from app.schemas.event import EventCreate, EventOut, EventUpdate
+from app.schemas.event import EventBriefRequest, EventCreate, EventOut, EventUpdate
+from app.services import rag_service
 from app.services.event_service import (
     create_event,
     delete_event,
@@ -83,3 +85,43 @@ def delete(
     ok, error = delete_event(db, event_id, current_user.id)
     if not ok:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error)
+
+
+@router.post("/{event_id}/brief")
+def save_brief(
+    event_id: int,
+    body: EventBriefRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Extract AI planning requirements from text and store in event.brief_json."""
+    event = get_event(db, event_id)
+    if event is None or event.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+    try:
+        extracted = rag_service.extract_event_requirements(body.text)
+        event.brief_json = json.dumps(extracted)
+        db.commit()
+        return extracted
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+
+@router.post("/{event_id}/catering-brief")
+def save_catering_brief(
+    event_id: int,
+    body: EventBriefRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Extract AI catering requirements from text and store in event.catering_json."""
+    event = get_event(db, event_id)
+    if event is None or event.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+    try:
+        extracted = rag_service.parse_catering_requirements(body.text)
+        event.catering_json = json.dumps(extracted)
+        db.commit()
+        return extracted
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))

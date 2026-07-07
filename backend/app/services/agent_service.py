@@ -101,6 +101,9 @@ DECISION RULES:
 4. If rag_search returns fewer than 3 relevant venue results → consider search_venues_live.
 5. You may call multiple tools before answering. Think step by step.
 6. Never make up venue names, phone numbers, capacities or prices.
+7. CONVERSATION CONTEXT: You have access to the full conversation history. If the user refers
+   to something mentioned earlier ("the second one", "its price", "that venue", "same place"),
+   resolve the reference from the conversation history before calling any tool.
 
 FINAL ANSWER FORMAT:
 When you have enough information, output ONLY a JSON object with these exact fields:
@@ -178,7 +181,7 @@ def _tool_search_venues_live(
     if not coords:
         return {"error": f"Could not geocode city: {city}", "venues_found": 0, "venues": []}
 
-    venues, counts = fetch_all_city_venues(
+    venues, counts, _ = fetch_all_city_venues(
         city=city,
         categories=categories,
         radius_km=radius_km,
@@ -392,7 +395,7 @@ def run_agent(
     MAX_ITERATIONS = 6
 
     messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
-    messages.extend(chat_history[-6:])
+    messages.extend(chat_history[-20:])
     messages.append({"role": "user", "content": query})
 
     tools_called: List[str] = []
