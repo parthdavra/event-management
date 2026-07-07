@@ -1065,14 +1065,24 @@ if st.session_state.get("sp_indexed_collection"):
                     effective_query = guard_in["real_intent"]
                     st.divider()
 
-                    st.write(f"**🤖 Event Planning Agent** · Collection: `{collection_name}`")
-                    st.caption("Agent decides which tools to call based on your question.")
+                    st.write(f"**🧭 Multi-Agent Planning System** · Collection: `{collection_name}`")
+                    st.caption("Orchestrator delegates to specialist agents based on your question.")
 
                     _TOOL_ICONS = {
                         "rag_search": "🔍",
                         "filter_by_capacity": "📐",
                         "search_venues_live": "🌐",
                         "find_catering_options": "🍽️",
+                    }
+                    _AGENT_ICONS = {
+                        "orchestrator": "🧭",
+                        "venue_agent": "🏛️",
+                        "catering_agent": "🍽️",
+                    }
+                    _AGENT_LABELS = {
+                        "orchestrator": "Orchestrator",
+                        "venue_agent": "Venue Agent",
+                        "catering_agent": "Catering Agent",
                     }
 
                     trace_events = client.ai_run_agent(
@@ -1084,8 +1094,15 @@ if st.session_state.get("sp_indexed_collection"):
 
                     for event in trace_events:
                         etype = event.get("type")
+                        agent = event.get("agent", "orchestrator")
+                        agent_icon = _AGENT_ICONS.get(agent, "🤖")
+                        agent_label = _AGENT_LABELS.get(agent, agent)
                         if etype == "thinking":
-                            st.caption(f"  💭 {event.get('message', '')}")
+                            st.caption(f"  {agent_icon} *{agent_label}* 💭 {event.get('message', '')}")
+                        elif etype == "delegate":
+                            to_label = _AGENT_LABELS.get(event.get("to", ""), event.get("to", ""))
+                            to_icon = _AGENT_ICONS.get(event.get("to", ""), "🤖")
+                            st.write(f"  {agent_icon} **{agent_label}** → delegating to {to_icon} **{to_label}**: {event.get('question', '')}")
                         elif etype == "tool_call":
                             tool = event.get("tool", "")
                             args = event.get("args", {})
@@ -1094,13 +1111,13 @@ if st.session_state.get("sp_indexed_collection"):
                                 f"`{k}={v}`" for k, v in args.items()
                                 if k not in ("collection_name",)
                             )
-                            st.write(f"  {icon} **Tool called:** `{tool}` — {arg_str}")
+                            st.write(f"    {agent_icon} *{agent_label}* {icon} **Tool called:** `{tool}` — {arg_str}")
                         elif etype == "tool_result":
-                            st.write(f"    ↳ Result: {event.get('summary', '')}")
-                        elif etype == "answer":
+                            st.write(f"      ↳ Result: {event.get('summary', '')}")
+                        elif etype == "answer" and agent == "orchestrator":
                             answer_data = event.get("data", {})
                         elif etype == "error":
-                            st.error(event.get("message", "Unknown error"))
+                            st.error(f"{agent_icon} *{agent_label}*: {event.get('message', 'Unknown error')}")
 
                     # Output guardrail — validate schema
                     st.divider()
@@ -1118,9 +1135,11 @@ if st.session_state.get("sp_indexed_collection"):
 
                     confidence_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(validated["confidence"], "⚪")
                     tools_used = answer_data.get("tools_used", []) if answer_data else []
+                    agents_used = answer_data.get("agents_used", []) if answer_data else []
                     st.write(
                         f"  ✅ Schema valid · "
                         f"Confidence: {confidence_icon} `{validated['confidence']}` · "
+                        f"Agents consulted: `{len(agents_used)}` · "
                         f"Tools: `{len(tools_used)}`"
                     )
                     st.caption(f"Interpretation: *{validated.get('query_interpretation', '')}*")
@@ -1132,7 +1151,7 @@ if st.session_state.get("sp_indexed_collection"):
                 if validated.get("sources_used"):
                     cols[1].caption("Sources: " + ", ".join(f"*{s}*" for s in validated["sources_used"][:3]))
                 if tools_used:
-                    cols[2].caption("Tools: " + " · ".join(f"`{t}`" for t in set(tools_used)))
+                    cols[2].caption("Agents: " + " · ".join(f"`{t}`" for t in set(tools_used)))
 
                 st.session_state["sp_chat_history"].append(
                     {"role": "assistant", "content": validated["answer"]}
