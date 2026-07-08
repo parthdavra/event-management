@@ -1,0 +1,48 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ECR repositories holding event-management's backend and frontend Docker images, for ECS Fargate deployment.
+
+Parameters:
+  ProjectTag:
+    Type: String
+    Default: event-management
+  ApplicationTag:
+    Type: String
+    Default: dstrmaysam
+  OwnerTag:
+    Type: String
+    Default: parthdavra
+
+Resources:
+  BackendRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: dstrmaysam-evmgmt-backend
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  FrontendRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: dstrmaysam-evmgmt-frontend
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+Outputs:
+  BackendRepoUri:
+    Value: !GetAtt BackendRepo.RepositoryUri
+  FrontendRepoUri:
+    Value: !GetAtt FrontendRepo.RepositoryUri

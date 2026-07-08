@@ -1,0 +1,278 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  ECS Fargate deployment of event-management (backend + frontend in one task,
+  behind an Application Load Balancer), mirroring the same pattern as the
+  dstrmaysam-healthcare-knowledge-multi-agent-dev project. No static AWS
+  credentials are placed in the task — a task IAM role grants Secrets
+  Manager + CloudWatch access, matching the app's existing credential model.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: At least two public subnets in different AZs (for the ALB and Fargate tasks).
+  BackendImage:
+    Type: String
+    Description: Full ECR image URI for the backend, e.g. <account>.dkr.ecr.<region>.amazonaws.com/dstrmaysam-evmgmt-backend:latest
+  FrontendImage:
+    Type: String
+    Description: Full ECR image URI for the frontend.
+  SecretsManagerSecretName:
+    Type: String
+    Default: dstrmaysam-evmgmt-secrets
+  TaskCpu:
+    Type: String
+    Default: "1024"
+  TaskMemory:
+    Type: String
+    Default: "2048"
+  ProjectTag:
+    Type: String
+    Default: event-management
+  ApplicationTag:
+    Type: String
+    Default: dstrmaysam
+  OwnerTag:
+    Type: String
+    Default: parthdavra
+
+Resources:
+  # ── Cluster & logging ─────────────────────────────────────────────────────────
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: dstrmaysam-evmgmt-dev
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/dstrmaysam-evmgmt-app
+      RetentionInDays: 14
+
+  # ── IAM ────────────────────────────────────────────────────────────────────────
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AppSecretsAndMetrics
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretsManagerSecretName}-*"
+              - Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+
+  # ── Networking ─────────────────────────────────────────────────────────────────
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public access to the ALB (frontend + backend API ports)
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          CidrIp: 0.0.0.0/0
+          Description: Streamlit frontend
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+          Description: FastAPI backend
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Fargate task ports, reachable only from the ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  # ── Load balancer ──────────────────────────────────────────────────────────────
+
+  Alb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: dstrmaysam-evmgmt-alb
+      Type: application
+      Scheme: internet-facing
+      Subnets: !Ref SubnetIds
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: dstrmaysam-evmgmt-backend-tg
+      Port: 8000
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /health/
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  FrontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: dstrmaysam-evmgmt-frontend-tg
+      Port: 8501
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /_stcore/health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  BackendListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 8080
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+
+  FrontendListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 8501
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroup
+
+  # ── Task definition & service ──────────────────────────────────────────────────
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: dstrmaysam-evmgmt-app
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: backend
+          Image: !Ref BackendImage
+          PortMappings:
+            - ContainerPort: 8000
+          Environment:
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: AWS_SECRETS_MANAGER_SECRET_NAME
+              Value: !Ref SecretsManagerSecretName
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: backend
+        - Name: frontend
+          Image: !Ref FrontendImage
+          PortMappings:
+            - ContainerPort: 8501
+          Environment:
+            - Name: BACKEND_URL
+              Value: http://localhost:8000
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: frontend
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: [BackendListener, FrontendListener]
+    Properties:
+      ServiceName: dstrmaysam-evmgmt-app-service
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref SubnetIds
+          SecurityGroups: [!Ref TaskSecurityGroup]
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - ContainerName: backend
+          ContainerPort: 8000
+          TargetGroupArn: !Ref BackendTargetGroup
+        - ContainerName: frontend
+          ContainerPort: 8501
+          TargetGroupArn: !Ref FrontendTargetGroup
+
+Outputs:
+  AlbDnsName:
+    Value: !GetAtt Alb.DNSName
+  FrontendUrl:
+    Value: !Sub "http://${Alb.DNSName}:8501"
+  BackendUrl:
+    Value: !Sub "http://${Alb.DNSName}:8080"
