@@ -97,12 +97,39 @@ def get_chunks_by_filter(
 # ── Embeddings ────────────────────────────────────────────────────────────────
 
 def get_embeddings(texts: List[str]) -> List[List[float]]:
+    """
+    Azure/OpenAI embeddings enforce a hard 300k-token-per-request ceiling.
+    Batch conservatively (~3 chars/token estimate — safe margin under the
+    limit even for dense text) so bulk indexing many/large chunks (e.g.
+    enriched venue rich-text + raw-JSON pairs) never blows past it in one call.
+    """
     client = _openai_client()
-    response = client.embeddings.create(
-        input=texts,
-        model=settings.azure_openai_embedding_deployment,
-    )
-    return [item.embedding for item in response.data]
+    model = settings.azure_openai_embedding_deployment
+
+    _MAX_CHARS_PER_BATCH = 450_000  # ~150k tokens at ~3 chars/token
+    _MAX_ITEMS_PER_BATCH = 500
+
+    all_embeddings: List[List[float]] = []
+    batch: List[str] = []
+    batch_chars = 0
+
+    def _flush():
+        nonlocal batch, batch_chars
+        if not batch:
+            return
+        response = client.embeddings.create(input=batch, model=model)
+        all_embeddings.extend(item.embedding for item in response.data)
+        batch = []
+        batch_chars = 0
+
+    for text in texts:
+        if batch and (batch_chars + len(text) > _MAX_CHARS_PER_BATCH or len(batch) >= _MAX_ITEMS_PER_BATCH):
+            _flush()
+        batch.append(text)
+        batch_chars += len(text)
+    _flush()
+
+    return all_embeddings
 
 
 def add_to_collection(

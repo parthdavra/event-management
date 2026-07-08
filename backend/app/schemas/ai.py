@@ -85,6 +85,37 @@ class QueryMetricRecent(BaseModel):
     context_precision: Optional[float] = None
 
 
+class DailyCount(BaseModel):
+    date: str
+    count: int
+
+
+class EndpointCount(BaseModel):
+    endpoint: str
+    count: int
+
+
+class TopUser(BaseModel):
+    username: str
+    count: int
+
+
+class BusinessMetricsSummary(BaseModel):
+    total_users: int
+    total_events: int
+    total_queries: int
+    total_indexed_sources: int
+    total_indexed_chunks: int
+    endpoint_breakdown: List[EndpointCount]
+    top_users_by_events: List[TopUser]
+    top_users_by_queries: List[TopUser]
+
+
+class BusinessMetricsTrend(BaseModel):
+    events_trend: List[DailyCount]
+    queries_trend: List[DailyCount]
+
+
 class InputGuardrailResponse(BaseModel):
     allowed: bool
     rejection_reason: Optional[str] = None

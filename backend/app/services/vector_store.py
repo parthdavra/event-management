@@ -110,7 +110,17 @@ def add(
             "_id": _doc_id(collection_name, chunk_id),
             "_source": body,
         })
-    helpers.bulk(client, actions)
+    # chunk_size caps each sub-request's size and max_retries/backoff absorbs
+    # transient 429s (TOO_MANY_REQUESTS) from the write queue filling up on
+    # the small single-node domain — without this, any queue-full rejection
+    # immediately failed the whole indexing call instead of retrying.
+    helpers.bulk(
+        client, actions,
+        chunk_size=100,
+        max_retries=3,
+        initial_backoff=2,
+        max_backoff=60,
+    )
     return len(actions)
 
 
