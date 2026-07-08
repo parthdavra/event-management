@@ -13,6 +13,7 @@ dist/
 build/
 .eggs/
 *.egg
+.pytest_cache/
 
 # Environments
 .env
@@ -24,9 +25,11 @@ env/
 *.db
 *.sqlite
 *.sqlite3
+infra/db_migration/*.dump
 
-# ChromaDB vector store
-chroma_db/
+# RAGAS eval reports (regenerated each run)
+backend/eval/results/*.json
+backend/eval/results/*.log
 
 # Streamlit
 .streamlit/secrets.toml

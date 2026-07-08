@@ -52,6 +52,39 @@ class AgentTraceEvent(BaseModel):
     data: Optional[Dict[str, Any]] = None
 
 
+class AIHistoryMessage(BaseModel):
+    role: str
+    content: str
+    created_at: Any
+
+
+class QueryMetricSummary(BaseModel):
+    total_queries: int
+    avg_latency_ms: float
+    avg_prompt_tokens: float
+    avg_completion_tokens: float
+    avg_tokens: float
+    avg_cost_usd: float
+    total_cost_usd: float
+    scored_queries: int
+    avg_faithfulness: Optional[float] = None
+    avg_answer_relevancy: Optional[float] = None
+    avg_context_precision: Optional[float] = None
+
+
+class QueryMetricRecent(BaseModel):
+    endpoint: str
+    latency_ms: float
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: float
+    created_at: Any
+    ragas_status: str
+    faithfulness: Optional[float] = None
+    answer_relevancy: Optional[float] = None
+    context_precision: Optional[float] = None
+
+
 class InputGuardrailResponse(BaseModel):
     allowed: bool
     rejection_reason: Optional[str] = None

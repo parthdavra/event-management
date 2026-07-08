@@ -69,13 +69,13 @@ try:
         st.error(f"❌ Failed — {pg.get('detail')}")
     results["PostgreSQL"] = (pg.get("ok", False), pg.get("detail", ""))
 
-    st.markdown("**ChromaDB**")
-    chroma = checks.get("chromadb", {})
-    if chroma.get("ok"):
-        st.success(f"✅ OK ({chroma.get('ms')}ms) — {chroma.get('detail')}")
+    st.markdown("**OpenSearch**")
+    opensearch = checks.get("opensearch", {})
+    if opensearch.get("ok"):
+        st.success(f"✅ OK ({opensearch.get('ms')}ms) — {opensearch.get('detail')}")
     else:
-        st.error(f"❌ Failed — {chroma.get('detail')}")
-    results["ChromaDB"] = (chroma.get("ok", False), chroma.get("detail", ""))
+        st.error(f"❌ Failed — {opensearch.get('detail')}")
+    results["OpenSearch"] = (opensearch.get("ok", False), opensearch.get("detail", ""))
 
     st.markdown("**Azure OpenAI**")
     oai = checks.get("azure_openai", {})

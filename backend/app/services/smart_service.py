@@ -113,7 +113,7 @@ async def _try_mcp(
 async def smart_search_venues(body: VenueSearchRequest, user_id: int = 0) -> dict[str, Any]:
     """
     Venue search with priority chain:
-      1. Indexed ChromaDB chunks (if the user has indexed this event type)
+      1. Indexed OpenSearch chunks (if the user has indexed this event type)
       2. Canvas Events API (primary for all cities)
       3. MCP tool / other APIs as final fallback
     """

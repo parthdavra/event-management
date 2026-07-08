@@ -1,8 +1,9 @@
 # UI
-streamlit>=1.32.0
+streamlit==1.59.0
+plotly==6.8.0
 
 # HTTP client (sync, for Streamlit's execution model)
-httpx>=0.27.0
+httpx==0.28.1
 
 # Settings / env
-python-dotenv>=1.0.0
+python-dotenv==1.2.2

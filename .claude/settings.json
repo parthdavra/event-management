@@ -38,7 +38,31 @@
       "PowerShell(docker compose -f \"C:\\\\Users\\\\parth\\\\Desktop\\\\week-8\\\\event-management\\\\docker-compose.yml\" restart backend 2>&1)",
       "PowerShell(docker port event-management-frontend-1)",
       "PowerShell(docker exec event-management-frontend-1 python3 -c \"import py_compile; py_compile.compile\\('/app/pages/4_Data_Indexing.py'\\); print\\('OK'\\)\" 2>&1)",
-      "PowerShell(docker exec event-management-frontend-1 python3 -c \"import py_compile; py_compile.compile\\('/app/pages/7_Smart_Planner.py'\\); print\\('OK'\\)\" 2>&1)"
+      "PowerShell(docker exec event-management-frontend-1 python3 -c \"import py_compile; py_compile.compile\\('/app/pages/7_Smart_Planner.py'\\); print\\('OK'\\)\" 2>&1)",
+      "Bash(python -m venv 'C:\\\\Users\\\\parth\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-parth-Desktop-week-8-event-management\\\\ea7e80ba-eafa-41b9-af15-c52c1859a170\\\\scratchpad/backend_pin_venv')",
+      "Bash(npx --version)",
+      "Bash(python -m py_compile eval/index_fixture.py eval/run_ragas_eval.py)",
+      "Bash(rm -f eval/results/report_20260707T212114Z.json)",
+      "Bash(docker-compose build *)",
+      "Bash(docker-compose up *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8080/health/ping)",
+      "Bash(python -m py_compile pages/7_Smart_Planner.py)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8501)",
+      "Bash(find . -iname \"*test*\" -not -path \"*/node_modules/*\" -not -path \"*/.git/*\")",
+      "Bash(cat .git/hooks/pre-push)",
+      "Bash(find . -iname \".pre-commit-config.yaml\")",
+      "Bash(curl -s -o /dev/null -w \"backend: %{http_code}\\\\n\" http://localhost:8080/health)",
+      "Bash(curl -s -o /dev/null -w \"frontend: %{http_code}\\\\n\" http://localhost:8501)",
+      "Bash(grep -n -i \"chroma\" backend/requirements.txt)",
+      "Bash(grep -n -i \"chroma\" frontend/requirements.txt)",
+      "Bash(grep -rn -i \"chroma\" .env*)",
+      "Bash(docker-compose config *)",
+      "Bash(docker volume *)",
+      "Bash(docker rm *)",
+      "Bash(aws --version)",
+      "Bash(aws sts *)",
+      "Bash(ls -la .env*)",
+      "Bash(grep -c \"AWS_\" .env)"
     ]
   }
 }

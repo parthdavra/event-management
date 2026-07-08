@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudWatch Dashboard for event-management system-level observability (request volume, latency p50/p95, error rate, LLM token usage, estimated cost).
+
+Parameters:
+  DashboardName:
+    Type: String
+    Default: dstrmaysam-evmgmt-observability
+  ProjectTag:
+    Type: String
+    Default: event-management
+  ApplicationTag:
+    Type: String
+    Default: dstrmaysam
+  OwnerTag:
+    Type: String
+    Default: parthdavra
+
+Resources:
+  ObservabilityDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Ref DashboardName
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Request Volume (per endpoint)",
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  [ { "expression": "SEARCH('{EventManagement,Endpoint} MetricName=\"RequestCount\"', 'Sum', 300)", "id": "e1", "label": "" } ]
+                ],
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Latency p50 / p95 (ms)",
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  [ { "expression": "SEARCH('{EventManagement,Endpoint} MetricName=\"Latency\"', 'p50', 300)", "id": "p50", "label": "p50" } ],
+                  [ { "expression": "SEARCH('{EventManagement,Endpoint} MetricName=\"Latency\"', 'p95', 300)", "id": "p95", "label": "p95" } ]
+                ],
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Error Rate (%)",
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  [ { "expression": "100 * (errs / reqs)", "id": "rate", "label": "Error Rate %" } ],
+                  [ { "expression": "SEARCH('{EventManagement,Endpoint} MetricName=\"ErrorCount\"', 'Sum', 300)", "id": "errs", "visible": false } ],
+                  [ { "expression": "SEARCH('{EventManagement,Endpoint} MetricName=\"RequestCount\"', 'Sum', 300)", "id": "reqs", "visible": false } ]
+                ],
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "LLM Token Usage (prompt + completion)",
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  [ "EventManagement", "PromptTokens", { "stat": "Sum", "label": "Prompt Tokens" } ],
+                  [ "EventManagement", "CompletionTokens", { "stat": "Sum", "label": "Completion Tokens" } ]
+                ],
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 12, "width": 24, "height": 6,
+              "properties": {
+                "title": "Estimated LLM Cost (USD)",
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  [ "EventManagement", "EstimatedCostUSD", { "stat": "Sum", "label": "Estimated Cost (USD)" } ]
+                ],
+                "period": 300
+              }
+            }
+          ]
+        }
+
+Outputs:
+  DashboardUrl:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}"

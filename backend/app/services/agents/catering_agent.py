@@ -6,7 +6,10 @@ venue/event.
 import re
 from typing import Dict, Generator, List, Optional
 
+from langfuse import observe
+
 from app.core.config import get_settings
+from app.prompts.catering_agent_system import PROMPT as _SYSTEM_PROMPT
 from app.services.agents._tool_loop import run_tool_loop
 
 settings = get_settings()
@@ -36,28 +39,26 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_catering_budget_estimate",
+            "description": (
+                "Get a recommended catering budget breakdown for an event, given the "
+                "total event budget. Returns the catering share plus the full category breakdown."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_type": {"type": "string", "description": "Type of event (corporate, wedding, conference, etc.)."},
+                    "total_budget": {"type": "number", "description": "Total event budget as a number."},
+                    "currency": {"type": "string", "description": "Currency code (default GBP).", "default": "GBP"},
+                },
+                "required": ["event_type", "total_budget"],
+            },
+        },
+    },
 ]
-
-_SYSTEM_PROMPT = """You are the Catering Specialist Agent, an expert in food and catering options for events.
-
-DECISION RULES:
-1. Call find_catering_options for any question about food, catering, restaurants, or dining at a venue.
-2. Never make up caterer names, phone numbers, or prices.
-3. You are being consulted by a Lead Orchestrator agent, not the end user directly — answer the
-   question you were asked as precisely and completely as possible, including the venue name and
-   event details it gave you.
-
-FINAL ANSWER FORMAT:
-When you have enough information, output ONLY a JSON object with these exact fields:
-{
-  "answer": "<your complete markdown answer>",
-  "sources_used": ["<caterer or venue name>", ...],
-  "confidence": "high" | "medium" | "low",
-  "query_interpretation": "<one sentence: how you understood the question>",
-  "tools_used": ["<tool names you called>"]
-}
-"""
-
 
 def _tool_find_catering_options(
     collection_name: str,
@@ -73,7 +74,7 @@ def _tool_find_catering_options(
         haversine_km,
         _IN_HOUSE_CATERING_TYPES,
     )
-    from app.services.rag_service import _chroma_client
+    from app.services.rag_service import get_chunks_by_filter
     import requests as _req
 
     venue_lat = venue_lon = None
@@ -81,10 +82,10 @@ def _tool_find_catering_options(
     has_cuisine = False
 
     try:
-        client = _chroma_client()
-        col = client.get_collection(collection_name)
-        raw = col.get(where={"chunk_type": "venue"}, include=["documents", "metadatas"])
-        for doc, meta in zip(raw.get("documents", []), raw.get("metadatas", [])):
+        docs, metas = get_chunks_by_filter(
+            collection_name, where={"chunk_type": "venue"}, include=["documents", "metadatas"]
+        )
+        for doc, meta in zip(docs, metas):
             if venue_name.lower() in meta.get("venue_name", "").lower():
                 venue_type = meta.get("venue_type", "").lower()
                 try:
@@ -130,6 +131,25 @@ def _tool_find_catering_options(
 
     in_house = any(t in venue_type for t in _IN_HOUSE_CATERING_TYPES) or has_cuisine
     profile = get_catering_profile(event_type)
+
+    # Overlay MCP's catering guide text (label/food_style/notes) onto the local profile.
+    # Local geoapify_cats/osm_amenity are kept — MCP's guide doesn't return search-driving
+    # fields, only descriptive text, so this is additive, not a replacement.
+    try:
+        from app.services.mcp_client import MCPToolsClient
+        mcp_guide = MCPToolsClient().call_tool_sync("em_catering_guide", {
+            "event_type": event_type,
+            "caller_id": settings.mcp_caller_id,
+        })
+        if mcp_guide:
+            profile = {
+                **profile,
+                "label": mcp_guide.get("label", profile.get("label")),
+                "food_style": mcp_guide.get("food_style", profile.get("food_style")),
+                "notes": mcp_guide.get("notes", profile.get("notes")),
+            }
+    except Exception:
+        pass
 
     # Fetch external catering options
     geo_cats = profile.get("geoapify_cats", "catering.restaurant,catering.cafe")
@@ -216,8 +236,43 @@ def _tool_find_catering_options(
     }
 
 
+def _tool_get_catering_budget_estimate(
+    event_type: str,
+    total_budget: float,
+    currency: str = "GBP",
+) -> Dict:
+    from app.services.mcp_client import MCPToolsClient
+
+    try:
+        result = MCPToolsClient().call_tool_sync("em_budget_planner", {
+            "event_type": event_type,
+            "total_budget": total_budget,
+            "currency": currency,
+            "caller_id": settings.mcp_caller_id,
+        })
+    except Exception as exc:
+        return {"error": f"Budget planner unavailable: {exc}"}
+
+    breakdown = (result or {}).get("breakdown", [])
+    if not breakdown:
+        return {"error": "Budget planner returned no breakdown."}
+
+    catering_line = next(
+        (b for b in breakdown if "catering" in b.get("category", "").lower()),
+        None,
+    )
+    return {
+        "event_type": event_type,
+        "total_budget": total_budget,
+        "currency": currency,
+        "catering_budget": catering_line,
+        "full_breakdown": breakdown,
+    }
+
+
 TOOL_REGISTRY = {
     "find_catering_options": _tool_find_catering_options,
+    "get_catering_budget_estimate": _tool_get_catering_budget_estimate,
 }
 
 
@@ -228,9 +283,13 @@ def _summarise_result(tool_name: str, result: Dict) -> str:
         n = result.get("external_options_found", 0)
         in_house = result.get("in_house_catering")
         return f"{n} external options found" + (" · has in-house catering" if in_house else "")
+    if tool_name == "get_catering_budget_estimate":
+        line = result.get("catering_budget") or {}
+        return f"Catering budget: {line.get('display', 'n/a')}"
     return str(result)[:200]
 
 
+@observe(as_type="agent", name="catering_agent")
 def run(
     query: str,
     collection_name: str,
@@ -238,6 +297,8 @@ def run(
     chat_history: Optional[List[Dict]] = None,
 ) -> Generator[Dict, None, Dict]:
     def _build_call_args(tool_name: str, tool_args: Dict) -> Dict:
+        if tool_name == "get_catering_budget_estimate":
+            return tool_args
         call_args = {"collection_name": collection_name, **tool_args}
         if city and "city" not in call_args:
             call_args["city"] = city

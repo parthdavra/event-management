@@ -1,0 +1,237 @@
+[
+  {
+    "id": "capacity_manchester_450",
+    "category": "capacity",
+    "pipeline": "rag",
+    "city": "Manchester",
+    "query": "I need a venue in Manchester for 450 guests.",
+    "reference": "Riverside Hall (500 capacity, £2,000/day), Northside Warehouse (800 capacity, £4,200/day), and The Exchange Auditorium (1,000 capacity, £5,000/day) can all accommodate 450 guests in Manchester.",
+    "expected_venue_names": ["Riverside Hall", "Northside Warehouse", "The Exchange Auditorium"],
+    "expected_context_keywords": ["Riverside Hall", "500", "Manchester"]
+  },
+  {
+    "id": "capacity_edinburgh_150",
+    "category": "capacity",
+    "pipeline": "rag",
+    "city": "Edinburgh",
+    "query": "Looking for an Edinburgh venue that can hold at least 150 people.",
+    "reference": "Granite Hall (400), Old Mill Barn (200), and The Grand Ballroom (600) in Edinburgh can all hold at least 150 people.",
+    "expected_venue_names": ["Granite Hall", "Old Mill Barn", "The Grand Ballroom"],
+    "expected_context_keywords": ["Edinburgh", "150"]
+  },
+  {
+    "id": "budget_bristol_under_2000",
+    "category": "budget",
+    "pipeline": "rag",
+    "city": "Bristol",
+    "query": "Find me a venue in Bristol under £2,000 for hire.",
+    "reference": "Three Bristol venues are under £2,000/day: Willow Community Centre (£450), The Tin Shed (£900), and Bloom Garden Rooms (£1,800).",
+    "expected_venue_names": ["Willow Community Centre", "The Tin Shed", "Bloom Garden Rooms"],
+    "expected_context_keywords": ["£450", "£900", "£1,800"]
+  },
+  {
+    "id": "budget_edinburgh_under_3500",
+    "category": "budget",
+    "pipeline": "rag",
+    "city": "Edinburgh",
+    "query": "What Edinburgh venues can I hire for under £3,500?",
+    "reference": "Granite Hall (£3,000), Old Mill Barn (£2,200), and Castleview Terrace (£1,200) in Edinburgh are all under £3,500/day. The Grand Ballroom (£6,500) is over budget.",
+    "expected_venue_names": ["Granite Hall", "Old Mill Barn", "Castleview Terrace"],
+    "expected_context_keywords": ["Edinburgh", "£3,000"]
+  },
+  {
+    "id": "area_manchester_general",
+    "category": "area",
+    "pipeline": "rag",
+    "city": "Manchester",
+    "query": "What venues do you have in Manchester?",
+    "reference": "Manchester venues include Riverside Hall, The Oak Pavilion, Northside Warehouse, The Exchange Auditorium, and Skyline Rooftop Bar.",
+    "expected_venue_names": ["Riverside Hall", "The Oak Pavilion", "Northside Warehouse", "The Exchange Auditorium", "Skyline Rooftop Bar"],
+    "expected_context_keywords": ["Manchester"]
+  },
+  {
+    "id": "area_bristol_general",
+    "category": "area",
+    "pipeline": "rag",
+    "city": "Bristol",
+    "query": "List the venues you have in Bristol.",
+    "reference": "Bristol venues include Bloom Garden Rooms, Harbourview Suites, The Tin Shed, and Willow Community Centre.",
+    "expected_venue_names": ["Bloom Garden Rooms", "Harbourview Suites", "The Tin Shed", "Willow Community Centre"],
+    "expected_context_keywords": ["Bristol"]
+  },
+  {
+    "id": "catering_oak_pavilion_yes",
+    "category": "catering",
+    "pipeline": "rag",
+    "city": "Manchester",
+    "query": "Does The Oak Pavilion have in-house catering?",
+    "reference": "Yes, The Oak Pavilion has in-house catering, offering a modern British wedding breakfast, canapés, and full bar service.",
+    "expected_venue_names": ["The Oak Pavilion"],
+    "expected_context_keywords": ["Oak Pavilion", "Cuisine"]
+  },
+  {
+    "id": "catering_riverside_hall_no",
+    "category": "catering",
+    "pipeline": "rag",
+    "city": "Manchester",
+    "query": "Does Riverside Hall have in-house catering?",
+    "reference": "Riverside Hall does not have in-house catering listed — external catering would need to be arranged separately.",
+    "expected_venue_names": ["Riverside Hall"],
+    "expected_context_keywords": ["Riverside Hall"]
+  },
+  {
+    "id": "catering_bristol_which_have",
+    "category": "catering",
+    "pipeline": "rag",
+    "city": "Bristol",
+    "query": "Which Bristol venues offer their own in-house catering?",
+    "reference": "Bloom Garden Rooms, Harbourview Suites, and The Tin Shed all offer in-house catering in Bristol; Willow Community Centre does not.",
+    "expected_venue_names": ["Bloom Garden Rooms", "Harbourview Suites", "The Tin Shed"],
+    "expected_context_keywords": ["Bristol", "Cuisine"]
+  },
+  {
+    "id": "multi_agent_oak_pavilion_catering",
+    "category": "multi_agent",
+    "pipeline": "agent",
+    "city": "Manchester",
+    "query": "I'm looking at The Oak Pavilion in Manchester for a wedding — can you tell me about the venue and its catering options?",
+    "reference": "The Oak Pavilion is a Wedding & Events Pavilion in Manchester with a capacity of 150 people, hiring from £3,500/day. It has in-house catering offering a modern British wedding breakfast, canapés, and full bar service.",
+    "expected_venue_names": ["The Oak Pavilion"],
+    "expected_context_keywords": ["Oak Pavilion", "150"],
+    "expected_agents_used": ["venue_agent", "catering_agent"]
+  },
+  {
+    "id": "multi_agent_old_mill_barn",
+    "category": "multi_agent",
+    "pipeline": "agent",
+    "city": "Edinburgh",
+    "query": "Tell me about Old Mill Barn in Edinburgh, including catering, for a 180-person event.",
+    "reference": "Old Mill Barn is a Countryside Function Venue in Edinburgh with a capacity of 200 people, comfortably fitting a 180-person event, hiring from £2,200/day. It offers in-house farm-to-table catering with rustic sharing platters.",
+    "expected_venue_names": ["Old Mill Barn"],
+    "expected_context_keywords": ["Old Mill Barn", "200", "Edinburgh"],
+    "expected_agents_used": ["venue_agent", "catering_agent"]
+  },
+  {
+    "id": "multi_agent_grand_ballroom_gala",
+    "category": "multi_agent",
+    "pipeline": "agent",
+    "city": "Edinburgh",
+    "query": "We're planning a 500-person gala in Edinburgh and want a venue with formal in-house dining — any suggestions?",
+    "reference": "The Grand Ballroom in Edinburgh is a Ballroom & Gala Venue with a capacity of 600 people, comfortably fitting 500 guests, hiring from £6,500/day. It offers in-house formal multi-course dinner service and a champagne reception.",
+    "expected_venue_names": ["The Grand Ballroom"],
+    "expected_context_keywords": ["Grand Ballroom", "Edinburgh"],
+    "expected_agents_used": ["venue_agent", "catering_agent"]
+  },
+  {
+    "id": "edge_no_match_capacity_5000_bristol",
+    "category": "edge_no_match",
+    "pipeline": "rag",
+    "city": "Bristol",
+    "query": "I need a venue for 5,000 guests in Bristol.",
+    "reference": "None of the indexed Bristol venues can accommodate 5,000 guests — the largest, Harbourview Suites, holds 300 people. No suitable venue was found.",
+    "expected_venue_names": [],
+    "expected_context_keywords": []
+  },
+  {
+    "id": "edge_no_match_budget_edinburgh_200",
+    "category": "edge_no_match",
+    "pipeline": "rag",
+    "city": "Edinburgh",
+    "query": "Find me an Edinburgh venue for under £200 total hire.",
+    "reference": "No Edinburgh venue in the index is available for under £200 — the cheapest, Castleview Terrace, is £1,200/day. No suitable venue was found within that budget.",
+    "expected_venue_names": [],
+    "expected_context_keywords": []
+  },
+  {
+    "id": "edge_city_not_in_fixture",
+    "category": "edge_no_match",
+    "pipeline": "rag",
+    "city": "London",
+    "query": "What venues do you have in London?",
+    "reference": "No venues in London were found in the indexed data — the available cities are Manchester, Bristol, and Edinburgh.",
+    "expected_venue_names": [],
+    "expected_context_keywords": []
+  },
+  {
+    "id": "multi_turn_manchester_cheapest",
+    "category": "multi_turn",
+    "pipeline": "rag",
+    "city": "Manchester",
+    "chat_history": [
+      {"role": "user", "content": "What venues are available in Manchester?"},
+      {"role": "assistant", "content": "Manchester venues include Riverside Hall, The Oak Pavilion, Northside Warehouse, The Exchange Auditorium, and Skyline Rooftop Bar."}
+    ],
+    "query": "Which of those is cheapest?",
+    "reference": "Skyline Rooftop Bar is the cheapest Manchester venue at £1,100/day.",
+    "expected_venue_names": ["Skyline Rooftop Bar"],
+    "expected_context_keywords": ["Skyline Rooftop Bar", "£1,100"]
+  },
+  {
+    "id": "multi_turn_bristol_its_capacity",
+    "category": "multi_turn",
+    "pipeline": "rag",
+    "city": "Bristol",
+    "chat_history": [
+      {"role": "user", "content": "Tell me about Harbourview Suites."},
+      {"role": "assistant", "content": "Harbourview Suites is a Hotel Conference Suite in Bristol, hiring from £2,600/day, with in-house catering."}
+    ],
+    "query": "What's its capacity?",
+    "reference": "Harbourview Suites has a capacity of 300 people.",
+    "expected_venue_names": ["Harbourview Suites"],
+    "expected_context_keywords": ["Harbourview Suites", "300"]
+  },
+  {
+    "id": "multi_turn_edinburgh_second_one",
+    "category": "multi_turn",
+    "pipeline": "rag",
+    "city": "Edinburgh",
+    "chat_history": [
+      {"role": "user", "content": "List Edinburgh venues under £3,500."},
+      {"role": "assistant", "content": "Granite Hall (£3,000), Old Mill Barn (£2,200), and Castleview Terrace (£1,200) are all under £3,500 in Edinburgh."}
+    ],
+    "query": "What's the capacity of the second one?",
+    "reference": "The second venue listed, Old Mill Barn, has a capacity of 200 people.",
+    "expected_venue_names": ["Old Mill Barn"],
+    "expected_context_keywords": ["Old Mill Barn", "200"]
+  },
+  {
+    "id": "general_capacity_over_500",
+    "category": "capacity",
+    "pipeline": "rag",
+    "city": "",
+    "query": "Which venues can hold more than 500 people?",
+    "reference": "Northside Warehouse (800), The Exchange Auditorium (1,000), and The Grand Ballroom (600) can all hold more than 500 people.",
+    "expected_venue_names": ["Northside Warehouse", "The Exchange Auditorium", "The Grand Ballroom"],
+    "expected_context_keywords": ["800", "1,000", "600"]
+  },
+  {
+    "id": "general_cheapest_overall",
+    "category": "budget",
+    "pipeline": "rag",
+    "city": "",
+    "query": "What's the cheapest venue you have available?",
+    "reference": "Willow Community Centre in Bristol is the cheapest venue at £450/day.",
+    "expected_venue_names": ["Willow Community Centre"],
+    "expected_context_keywords": ["Willow Community Centre", "£450"]
+  },
+  {
+    "id": "general_small_intimate_venue",
+    "category": "area",
+    "pipeline": "rag",
+    "city": "",
+    "query": "I need a small, intimate venue for around 60 people.",
+    "reference": "Castleview Terrace in Edinburgh accommodates up to 60 people, making it a good fit for a small, intimate event.",
+    "expected_venue_names": ["Castleview Terrace"],
+    "expected_context_keywords": ["Castleview Terrace", "60"]
+  },
+  {
+    "id": "general_largest_venue",
+    "category": "capacity",
+    "pipeline": "rag",
+    "city": "",
+    "query": "Which is your largest venue by capacity?",
+    "reference": "The Exchange Auditorium in Manchester is the largest venue, with a capacity of 1,000 people.",
+    "expected_venue_names": ["The Exchange Auditorium"],
+    "expected_context_keywords": ["Exchange Auditorium", "1,000"]
+  }
+]

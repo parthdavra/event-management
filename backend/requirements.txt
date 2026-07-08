@@ -1,40 +1,53 @@
 # Web framework
-fastapi>=0.111.0
-uvicorn[standard]>=0.29.0
+fastapi==0.139.0
+uvicorn[standard]==0.50.2
 
 # Database
-sqlalchemy>=2.0.0
-psycopg2-binary>=2.9.9
-alembic>=1.13.0
+sqlalchemy==2.0.51
+psycopg2-binary==2.9.12
+alembic==1.18.5
 
 # Auth & security
-python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 
 # Settings
-pydantic>=2.0.0
-pydantic-settings>=2.0.0
-pydantic[email]>=2.0.0
-python-dotenv>=1.0.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
+pydantic[email]==2.13.4
+python-dotenv==1.2.2
 
 # File uploads
-python-multipart>=0.0.9
+python-multipart==0.0.32
 
 # AI / RAG
-openai>=1.12.0
-chromadb>=0.4.22
+openai==1.109.1
+opensearch-py==3.2.0
 
 # Document parsing
-pypdf>=3.0.0
-python-docx>=1.1.0
+pypdf==6.14.2
+python-docx==1.2.0
 
 # HTTP (venue APIs)
-requests>=2.31.0
+requests==2.34.2
 
 # HTML scraping (Canvas Events)
-beautifulsoup4>=4.12.0
-lxml>=5.0.0
+beautifulsoup4==4.15.0
+lxml==6.1.1
 
 # MCP-Tools client
-mcp>=1.0.0
+mcp==1.28.1
+
+# Observability
+langfuse==4.13.1
+boto3==1.43.42
+
+# Evaluation (RAGAS) — pinned exactly: ragas>=0.3 requires newer langchain-core/
+# langgraph that conflict with the langchain-community version ragas itself
+# needs internally (a real upstream breakage as of mid-2026). Do not unpin.
+ragas==0.2.15
+langchain-openai==0.2.14
+
+# Testing
+pytest==8.3.4

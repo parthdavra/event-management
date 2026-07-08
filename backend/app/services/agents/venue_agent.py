@@ -6,7 +6,10 @@ questions about the indexed event brief (rag_search covers both).
 import re
 from typing import Dict, Generator, List, Optional
 
+from langfuse import observe
+
 from app.core.config import get_settings
+from app.prompts.venue_agent_system import PROMPT as _SYSTEM_PROMPT
 from app.services.agents._tool_loop import run_tool_loop
 
 settings = get_settings()
@@ -72,32 +75,6 @@ TOOL_DEFINITIONS = [
     },
 ]
 
-_SYSTEM_PROMPT = """You are the Venue Specialist Agent, an expert in finding and evaluating event venues.
-
-DECISION RULES:
-1. ALWAYS call rag_search first — it checks the indexed event brief and venue database.
-2. If the user mentions a number of guests / capacity → ALSO call filter_by_capacity.
-3. If rag_search returns fewer than 3 relevant venue results → consider search_venues_live.
-4. You may call multiple tools before answering. Think step by step.
-5. Never make up venue names, phone numbers, capacities or prices.
-6. CONVERSATION CONTEXT: You have access to the full conversation history. If the user refers
-   to something mentioned earlier ("the second one", "its price", "that venue", "same place"),
-   resolve the reference from the conversation history before calling any tool.
-7. You are being consulted by a Lead Orchestrator agent, not the end user directly — answer the
-   question you were asked as precisely and completely as possible.
-
-FINAL ANSWER FORMAT:
-When you have enough information, output ONLY a JSON object with these exact fields:
-{
-  "answer": "<your complete markdown answer>",
-  "sources_used": ["<venue or doc name>", ...],
-  "confidence": "high" | "medium" | "low",
-  "query_interpretation": "<one sentence: how you understood the question>",
-  "tools_used": ["<tool names you called>"]
-}
-"""
-
-
 def _tool_rag_search(collection_name: str, query: str, n_results: int = 8) -> Dict:
     from app.services.rag_service import query_collection
     try:
@@ -121,11 +98,11 @@ def _tool_rag_search(collection_name: str, query: str, n_results: int = 8) -> Di
 
 
 def _tool_filter_by_capacity(collection_name: str, min_capacity: int) -> Dict:
-    from app.services.rag_service import _chroma_client
+    from app.services.rag_service import get_chunks_by_filter
     try:
-        client = _chroma_client()
-        col = client.get_collection(collection_name)
-        raw = col.get(where={"chunk_type": "venue"}, include=["documents", "metadatas"])
+        docs, metas = get_chunks_by_filter(
+            collection_name, where={"chunk_type": "venue"}, include=["documents", "metadatas"]
+        )
     except Exception as exc:
         return {"error": str(exc), "matched_count": 0, "venues": []}
 
@@ -134,7 +111,7 @@ def _tool_filter_by_capacity(collection_name: str, min_capacity: int) -> Dict:
         return int(nums[0]) if nums else 0
 
     matched = []
-    for doc, meta in zip(raw.get("documents", []), raw.get("metadatas", [])):
+    for doc, meta in zip(docs, metas):
         confirmed = _parse_cap(meta.get("capacity", ""))
         if confirmed >= min_capacity:
             matched.append({
@@ -172,6 +149,30 @@ def _tool_search_venues_live(
         max_venues=100,
         coords=coords,
     )
+
+    # Supplement with the shared MCP server's venue search (additional source, not a
+    # replacement — MCP lacks the Canvas enrichment the local fetch above provides).
+    try:
+        from app.services.mcp_client import MCPToolsClient
+        mcp_result = MCPToolsClient().call_tool_sync("em_search_venues", {
+            "city": city,
+            "categories": categories,
+            "min_capacity": min_capacity or 0,
+            "radius_km": radius_km,
+            "caller_id": settings.mcp_caller_id,
+        })
+        mcp_venues = (mcp_result or {}).get("venues", [])
+    except Exception:
+        mcp_venues = []
+
+    if mcp_venues:
+        seen = {re.sub(r"[^a-z0-9]", "", v["name"].lower()) for v in venues if v.get("name")}
+        for v in mcp_venues:
+            key = re.sub(r"[^a-z0-9]", "", (v.get("name") or "").lower())
+            if key and key not in seen:
+                seen.add(key)
+                venues.append(v)
+        counts["MCP"] = len(mcp_venues)
 
     if min_capacity:
         def _cap(v: Dict) -> int:
@@ -218,6 +219,7 @@ def _summarise_result(tool_name: str, result: Dict) -> str:
     return str(result)[:200]
 
 
+@observe(as_type="agent", name="venue_agent")
 def run(
     query: str,
     collection_name: str,

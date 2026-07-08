@@ -154,6 +154,18 @@ _IN_HOUSE_CATERING_TYPES = {
     "bistro", "catering", "nightclub", "guest house", "motel", "hostel",
 }
 
+_DAY_NAMES = {
+    "mon": "Monday", "tue": "Tuesday", "wed": "Wednesday", "thu": "Thursday",
+    "fri": "Friday", "sat": "Saturday", "sun": "Sunday",
+}
+
+
+def _expand_day(d: str) -> str:
+    """'Fri' -> 'Friday' etc. so a question like 'price for Friday' matches the
+    indexed text directly instead of relying on the LLM to infer the abbreviation."""
+    return _DAY_NAMES.get(d.strip().lower()[:3], d)
+
+
 CAPACITY_ESTIMATES: Dict[str, str] = {
     "theatre": "typically 100–2,000 seats",
     "cinema": "typically 50–500 seats",
@@ -232,7 +244,14 @@ def get_catering_profile(event_type: str) -> Dict:
 
 
 def venue_to_text(v: Dict, city: str) -> str:
-    """Convert a venue dict to an indexable text chunk (includes Canvas rich data)."""
+    """Convert a venue dict to an indexable text chunk (includes Canvas rich data).
+
+    Renders every field the venue dict may carry, not just a summarized subset —
+    room-by-room pricing, per-space pricing, and list fields (perfect_for, event
+    types, features) are included in full rather than truncated, so the indexed
+    chunk actually reflects everything available after Canvas enrichment instead
+    of dropping most of it before it's ever searchable.
+    """
     parts = [f"Venue: {v.get('name', 'Unknown')}"]
     if v.get("type"):
         parts.append(f"Type: {v['type']}")
@@ -247,6 +266,8 @@ def venue_to_text(v: Dict, city: str) -> str:
         est = CAPACITY_ESTIMATES.get(vtype_lower, "")
         if est:
             parts.append(f"Capacity: {est} (estimated for {vtype_lower})")
+    if v.get("capacity_raw"):
+        parts.append(f"Capacity (numeric): {v['capacity_raw']}")
     if v.get("lat") and v.get("lon"):
         parts.append(f"Coordinates: {v['lat']}, {v['lon']}")
     if v.get("phone"):
@@ -255,18 +276,34 @@ def venue_to_text(v: Dict, city: str) -> str:
         parts.append(f"Email: {v['email']}")
     if v.get("website"):
         parts.append(f"Website: {v['website']}")
+    if v.get("opening_hours"):
+        parts.append(f"Opening hours: {v['opening_hours']}")
+    if v.get("operator"):
+        parts.append(f"Operator: {v['operator']}")
+    if v.get("rating"):
+        parts.append(f"Rating: {v['rating']}")
     if v.get("cuisine"):
         parts.append(f"Cuisine: {v['cuisine']}")
     if v.get("description"):
         parts.append(f"Description: {v['description'][:300]}")
     if v.get("wheelchair"):
         parts.append(f"Wheelchair access: {v['wheelchair']}")
+    if v.get("internet_access"):
+        parts.append(f"Internet access: {v['internet_access']}")
+    if v.get("outdoor_seating"):
+        parts.append(f"Outdoor seating: {v['outdoor_seating']}")
     if v.get("stars"):
         parts.append(f"Stars: {v['stars']}")
+    if v.get("rooms"):
+        parts.append(f"Hotel rooms: {v['rooms']}")
     if v.get("price_range"):
         parts.append(f"Price range: {v['price_range']}")
     if v.get("price_per_day"):
         parts.append(f"Day hire: {v['price_per_day']}")
+    if v.get("price_per_hour"):
+        parts.append(f"Hourly hire: {v['price_per_hour']}")
+    if v.get("min_spend"):
+        parts.append(f"Minimum spend: {v['min_spend']}")
     parts.append(f"Source: {v.get('source', 'unknown')}")
 
     # ── Canvas Events rich data ───────────────────────────────────────────────
@@ -283,28 +320,39 @@ def venue_to_text(v: Dict, city: str) -> str:
         parts.append(f"Starting from: {price_guide['from_price']}")
     days = price_guide.get("days") or {}
     if days:
-        day_prices = "; ".join(f"{d}: {p}" for d, p in days.items() if p != "Closed")
+        day_prices = "; ".join(f"{_expand_day(d)}: {p}" for d, p in days.items() if p != "Closed")
         if day_prices:
-            parts.append(f"Price guide: {day_prices}")
+            parts.append(f"Price guide by day: {day_prices}")
+    rooms_pricing = price_guide.get("rooms") or []
+    if rooms_pricing:
+        room_lines = "; ".join(
+            f"{r.get('name', '')} ({r.get('session', '')}, {r.get('time', '')}): {r.get('price', '')}"
+            for r in rooms_pricing if r.get("name")
+        )
+        if room_lines:
+            parts.append(f"Room hire options: {room_lines}")
 
     perfect_for = v.get("canvas_perfect_for") or []
     if perfect_for:
-        parts.append(f"Perfect for: {', '.join(perfect_for[:15])}")
+        parts.append(f"Perfect for: {', '.join(perfect_for)}")
 
     spaces = v.get("canvas_spaces") or []
     if spaces:
-        space_names = ", ".join(s.get("name", "") for s in spaces if s.get("name"))
-        if space_names:
-            parts.append(f"Available spaces: {space_names}")
+        space_lines = ", ".join(
+            f"{s['name']} ({s['price_per_day']})" if s.get("price_per_day") else s.get("name", "")
+            for s in spaces if s.get("name")
+        )
+        if space_lines:
+            parts.append(f"Available spaces: {space_lines}")
 
     features = v.get("canvas_features") or {}
     for cat, items in features.items():
         if items:
-            parts.append(f"{cat}: {', '.join(items[:10])}")
+            parts.append(f"{cat}: {', '.join(items)}")
 
     event_types = v.get("event_types") or []
     if event_types:
-        parts.append(f"Event types: {', '.join(event_types[:15])}")
+        parts.append(f"Event types: {', '.join(event_types)}")
 
     return "\n".join(parts)
 

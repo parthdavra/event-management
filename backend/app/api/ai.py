@@ -1,4 +1,5 @@
-from typing import Any, Dict, List
+import time
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -7,26 +8,62 @@ from app.api.deps import get_current_user, get_db
 from app.models.user import User
 from app.schemas.ai import (
     AgentRequest,
+    AIHistoryMessage,
     ChatRequest,
     ExtractRequirementsResponse,
     InputGuardrailResponse,
+    QueryMetricRecent,
+    QueryMetricSummary,
     RagRequest,
     RagResponse,
 )
-from app.services import agent_service, guardrails_service, indexing_service, rag_service
+from app.services import (
+    ai_chat_service,
+    agent_service,
+    guardrails_service,
+    indexing_service,
+    metrics_service,
+    query_metrics_service,
+    ragas_service,
+    rag_service,
+)
 
 router = APIRouter(prefix="/ai", tags=["ai"])
+
+
+def _save_query_metric(
+    db: Session,
+    user_id: int,
+    endpoint: str,
+    t0: float,
+    query: str,
+    answer: str,
+    contexts: Optional[List[str]] = None,
+) -> None:
+    latency_ms = (time.time() - t0) * 1000
+    usage = metrics_service.get_query_capture()
+    metric_id = query_metrics_service.save(
+        db, user_id, endpoint, latency_ms,
+        usage["prompt_tokens"], usage["completion_tokens"], usage["cost_usd"],
+    )
+    ragas_service.score_query_in_background(metric_id, query, answer, contexts)
 
 
 @router.post("/chat")
 def direct_chat(
     body: ChatRequest,
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, str]:
     """Direct LLM chat (no RAG context)."""
     history = [m.model_dump() for m in (body.chat_history or [])]
+    t0 = time.time()
+    metrics_service.start_query_capture()
     try:
         answer = rag_service.generate_chat_response(body.query, history)
+        _save_query_metric(db, current_user.id, "/ai/chat", t0, body.query, answer)
+        ai_chat_service.save_message(db, current_user.id, "user", body.query)
+        ai_chat_service.save_message(db, current_user.id, "assistant", answer)
         return {"answer": answer}
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
@@ -38,8 +75,10 @@ def rag_chat(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """RAG-powered chat: retrieve context from ChromaDB, then answer."""
+    """RAG-powered chat: retrieve context from OpenSearch, then answer."""
     history = [m.model_dump() for m in (body.chat_history or [])]
+    t0 = time.time()
+    metrics_service.start_query_capture()
     try:
         if body.collection_names:
             collections = body.collection_names
@@ -47,7 +86,7 @@ def rag_chat(
             collections = indexing_service.get_all_user_collections(db, current_user.id)
 
         # Rewrite the query to be self-contained using conversation history,
-        # so ChromaDB retrieval resolves references like "the second venue" correctly.
+        # so OpenSearch retrieval resolves references like "the second venue" correctly.
         search_query = rag_service.rewrite_query_with_history(body.query, history)
 
         # Parse capacity / budget constraints from the query for smart metadata filtering
@@ -70,6 +109,9 @@ def rag_chat(
         )
         # Generate the answer using the ORIGINAL user query + full history for natural response
         result = rag_service.generate_rag_response_json(body.query, docs, history)
+        _save_query_metric(db, current_user.id, "/ai/rag", t0, body.query, result.get("answer", ""), docs)
+        ai_chat_service.save_message(db, current_user.id, "user", body.query)
+        ai_chat_service.save_message(db, current_user.id, "assistant", result.get("answer", ""))
         return RagResponse(**result)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
@@ -104,7 +146,8 @@ def check_input(
 @router.post("/agent")
 def run_agent(
     body: AgentRequest,
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> List[Dict[str, Any]]:
     """
     Run the event planning agent and return all trace events as a list.
@@ -112,6 +155,8 @@ def run_agent(
     Returns a list of trace event dicts (type: thinking|tool_call|tool_result|answer|error).
     """
     history = [m.model_dump() for m in (body.chat_history or [])]
+    t0 = time.time()
+    metrics_service.start_query_capture()
     try:
         events = list(
             agent_service.run_agent(
@@ -121,6 +166,52 @@ def run_agent(
                 chat_history=history,
             )
         )
+        final_answer = next(
+            (e["data"].get("answer", "") for e in reversed(events) if e.get("type") == "answer"),
+            "",
+        )
+        _save_query_metric(db, current_user.id, "/ai/agent", t0, body.query, final_answer)
+        ai_chat_service.save_message(db, current_user.id, "user", body.query)
+        if final_answer:
+            ai_chat_service.save_message(db, current_user.id, "assistant", final_answer)
         return events
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+
+@router.get("/history", response_model=List[AIHistoryMessage])
+def get_ai_history(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the current user's persisted AI Assistant conversation."""
+    return ai_chat_service.get_history(db, current_user.id)
+
+
+@router.delete("/history")
+def clear_ai_history(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Clear the current user's persisted AI Assistant conversation."""
+    ai_chat_service.clear_history(db, current_user.id)
+    return {"ok": True}
+
+
+@router.get("/metrics/summary", response_model=QueryMetricSummary)
+def get_query_metrics_summary(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Aggregate per-query stats (avg latency/tokens/cost, totals) for the current user."""
+    return query_metrics_service.get_summary(db, current_user.id)
+
+
+@router.get("/metrics/recent", response_model=List[QueryMetricRecent])
+def get_query_metrics_recent(
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Most recent individual queries (endpoint, latency, tokens, cost) for the current user."""
+    return query_metrics_service.get_recent(db, current_user.id, limit=limit)

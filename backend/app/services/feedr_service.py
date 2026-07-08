@@ -7,7 +7,7 @@ public and returns rich vendor data — no Playwright required.
 API: https://gql.r53.prod.caterdesk.com/graphql
 Feedr tenant ID: 64c934f210528b243cba6142
 
-Scraped vendors are stored in ChromaDB as 2 chunks per vendor:
+Scraped vendors are stored in OpenSearch as 2 chunks per vendor:
   1. Rich text  — for semantic search
   2. Raw JSON   — for exact data retrieval (chunk_type="raw_json")
 """
@@ -564,7 +564,7 @@ def match_vendors_for_groups(
 # ── Text conversion ───────────────────────────────────────────────────────────
 
 def vendor_to_text(v: Dict[str, Any], city: str) -> str:
-    """Convert a Feedr vendor dict to a rich text chunk for ChromaDB."""
+    """Convert a Feedr vendor dict to a rich text chunk for OpenSearch."""
     parts = [f"Catering Vendor: {v.get('name', 'Unknown')}"]
     parts.append("Platform: Feedr.co (office catering marketplace)")
     c = v.get("city") or city
@@ -609,7 +609,7 @@ def index_feedr_vendors(
     replace_existing: bool = True,
 ) -> Tuple[Optional[int], Optional[str]]:
     """
-    Index Feedr.co vendors into a dedicated ChromaDB collection.
+    Index Feedr.co vendors into a dedicated OpenSearch collection.
     Collection name: feedr_u{user_id}_{city_slug}
     Each vendor → 2 chunks: rich text + raw JSON.
     """

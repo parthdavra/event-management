@@ -161,7 +161,7 @@ with tab_api:
     st.subheader("Fetch & Index Venue Data by City")
     st.markdown(
         "Search real venue data from public APIs. "
-        "Each city gets its **own ChromaDB collection** so the AI can answer location-specific questions."
+        "Each city gets its **own OpenSearch collection** so the AI can answer location-specific questions."
     )
 
     col_city, col_radius = st.columns([3, 1])
@@ -658,7 +658,7 @@ with tab_feedr:
     st.markdown(
         "Fetches catering vendors from [feedr.co](https://feedr.co/en-gb/office-catering/vendors) "
         "via the CaterDesk GraphQL API — no Playwright required. "
-        "Data is indexed into a dedicated ChromaDB collection (`feedr_u{user_id}_{city}`) "
+        "Data is indexed into a dedicated OpenSearch collection (`feedr_u{user_id}_{city}`) "
         "as **2 chunks per vendor**: rich semantic text + raw JSON for exact retrieval.\n\n"
         "Feedr.co covers 200+ office catering vendors in London and other UK cities, "
         "with cuisine tags, dietary flags, ratings, and per-location addresses."

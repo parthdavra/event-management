@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Amazon RDS for PostgreSQL instance used as event-management's primary application database.
+
+Parameters:
+  DBInstanceIdentifier:
+    Type: String
+    Default: dstrmaysam-evmgmt-db
+    Description: RDS instance identifier.
+  DatabaseName:
+    Type: String
+    Default: event_mgmt
+  MasterUsername:
+    Type: String
+    Default: evmgmt_admin
+    Description: Master username (avoid reserved words like 'admin').
+  MasterUserPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: Master user password. Pass at deploy time, never store in the template.
+  DBInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+  AllocatedStorageGB:
+    Type: Number
+    Default: 20
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to launch the instance in (your account's default VPC works).
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: At least two subnets in different AZs (default VPC's public subnets work).
+  ProjectTag:
+    Type: String
+    Default: event-management
+  ApplicationTag:
+    Type: String
+    Default: dstrmaysam
+  OwnerTag:
+    Type: String
+    Default: parthdavra
+
+Resources:
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub "Subnet group for ${DBInstanceIdentifier}"
+      SubnetIds: !Ref SubnetIds
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "Public Postgres access for ${DBInstanceIdentifier}"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 0.0.0.0/0
+          Description: Postgres access secured by master password, matching the OpenSearch domain public access pattern.
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBInstanceIdentifier: !Ref DBInstanceIdentifier
+      Engine: postgres
+      EngineVersion: "17.9"
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref AllocatedStorageGB
+      StorageType: gp3
+      DBName: !Ref DatabaseName
+      MasterUsername: !Ref MasterUsername
+      MasterUserPassword: !Ref MasterUserPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      PubliclyAccessible: true
+      MultiAZ: false
+      StorageEncrypted: true
+      BackupRetentionPeriod: 1
+      DeletionProtection: false
+      Tags:
+        - Key: Name
+          Value: !Ref DBInstanceIdentifier
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+Outputs:
+  DBEndpoint:
+    Description: Endpoint address (use this for the app's DATABASE_URL).
+    Value: !GetAtt DBInstance.Endpoint.Address
+  Port:
+    Value: !GetAtt DBInstance.Endpoint.Port
+  DatabaseName:
+    Value: !Ref DatabaseName
+  MasterUsername:
+    Value: !Ref MasterUsername
