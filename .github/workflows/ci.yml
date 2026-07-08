@@ -55,53 +55,6 @@ jobs:
         # committed, matching the existing OpenSearch template's pattern.
         run: cfn-lint --ignore-checks W1011 -- infra/*.yml
 
-  deploy:
-    name: Deploy to ECS
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [backend-tests, frontend-build, compose-validate, infra-lint]
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write   # required for OIDC — no stored AWS access keys
-      contents: read
-    env:
-      AWS_REGION: eu-west-2
-      ECR_REGISTRY: 666127452756.dkr.ecr.eu-west-2.amazonaws.com
-      ECS_CLUSTER: dstrmaysam-evmgmt-dev
-      ECS_SERVICE: dstrmaysam-evmgmt-app-service
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.EVMGMT_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Log in to ECR
-        run: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
-            | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
-
-      - name: Build and push backend image
-        run: |
-          docker build -t ${{ env.ECR_REGISTRY }}/dstrmaysam-evmgmt-backend:${{ github.sha }} \
-                        -t ${{ env.ECR_REGISTRY }}/dstrmaysam-evmgmt-backend:latest ./backend
-          docker push ${{ env.ECR_REGISTRY }}/dstrmaysam-evmgmt-backend:${{ github.sha }}
-          docker push ${{ env.ECR_REGISTRY }}/dstrmaysam-evmgmt-backend:latest
-
-      - name: Build and push frontend image
-        run: |
-          docker build -t ${{ env.ECR_REGISTRY }}/dstrmaysam-evmgmt-frontend:${{ github.sha }} \
-                        -t ${{ env.ECR_REGISTRY }}/dstrmaysam-evmgmt-frontend:latest ./frontend
-          docker push ${{ env.ECR_REGISTRY }}/dstrmaysam-evmgmt-frontend:${{ github.sha }}
-          docker push ${{ env.ECR_REGISTRY }}/dstrmaysam-evmgmt-frontend:latest
-
-      - name: Force new ECS deployment
-        run: |
-          aws ecs update-service --cluster ${{ env.ECS_CLUSTER }} --service ${{ env.ECS_SERVICE }} \
-            --force-new-deployment --region ${{ env.AWS_REGION }}
-
-      - name: Wait for service to reach steady state
-        run: |
-          aws ecs wait services-stable --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.ECS_SERVICE }} \
-            --region ${{ env.AWS_REGION }}
+  # Deployment to ECS is handled by CodePipeline (infra/codepipeline.yml),
+  # triggered directly off pushes to main via a CodeStar GitHub connection —
+  # not by this workflow. GitHub Actions here is CI-only (test/build/lint).
