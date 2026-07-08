@@ -139,6 +139,20 @@ EVENT_CATERING_PROFILES: Dict[str, Dict] = {
         "osm_amenity": ["restaurant", "bar", "pub", "cafe"],
         "notes": "Confirm headcount 48h before. Cater ~10% more than guest count for buffer.",
     },
+    "exhibition": {
+        "label": "Exhibition / Trade Show",
+        "food_style": "food stalls, quick bites, coffee, light snacks",
+        "geoapify_cats": "catering.food_court,catering.fast_food,catering.cafe",
+        "osm_amenity": ["food_court", "fast_food", "cafe"],
+        "notes": "High footfall — multiple vendors preferred. Fast service is key.",
+    },
+    "product_launch": {
+        "label": "Product Launch / Brand Event",
+        "food_style": "branded canapes, themed cocktails, food stations",
+        "geoapify_cats": "catering.restaurant,catering.bar,catering.cafe",
+        "osm_amenity": ["restaurant", "bar", "cafe"],
+        "notes": "Food can be themed to match the brand. Instagram-worthy presentation is a bonus.",
+    },
 }
 
 _DEFAULT_CATERING_PROFILE: Dict = {
@@ -174,12 +188,18 @@ CAPACITY_ESTIMATES: Dict[str, str] = {
     "concert hall": "typically 500–5,000 seats",
     "conference centre": "typically 50–5,000 people",
     "events venue": "typically 50–3,000 people",
+    "exhibition centre": "typically 500–50,000 people",
     "hotel": "conference rooms typically 20–1,000 people",
     "restaurant": "typically 20–300 covers",
     "pub": "typically 20–200 people",
     "bar": "typically 50–500 people",
     "stadium": "typically 5,000–90,000 people",
     "sports centre": "typically 200–10,000 people",
+    "sports hall": "typically 200–5,000 people",
+    "arena": "typically 2,000–20,000 people",
+    "community centre": "typically 50–500 people",
+    "public hall": "typically 50–1,000 people",
+    "nightclub": "typically 100–2,000 people",
 }
 
 

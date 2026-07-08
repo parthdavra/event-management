@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-tests:
+    name: Backend unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t event-management-backend:ci ./backend
+
+      - name: Run unit tests
+        run: docker run --rm event-management-backend:ci python -m pytest tests/ -v
+
+  frontend-build:
+    name: Frontend build check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build frontend image
+        run: docker build -t event-management-frontend:ci ./frontend
+
+  compose-validate:
+    name: docker-compose config validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        run: |
+          touch .env
+          docker compose config -q
+
+  infra-lint:
+    name: Lint CloudFormation templates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Lint infra templates
+        # W1011 (use a Secrets Manager dynamic reference instead of a NoEcho
+        # parameter for DB passwords) is a deliberate, already-verified-safe
+        # tradeoff here — the password is passed at deploy time, never
+        # committed, matching the existing OpenSearch template's pattern.
+        run: cfn-lint --ignore-checks W1011 -- infra/*.yml
