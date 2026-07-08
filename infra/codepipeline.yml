@@ -90,7 +90,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
-                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/codebuild/dstrmaysam-evmgmt-build*"
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/dstrmaysam-evmgmt-build*"
               - Effect: Allow
                 Action: [s3:GetObject, s3:GetObjectVersion, s3:PutObject]
                 Resource: !Sub "${ArtifactBucket.Arn}/*"
