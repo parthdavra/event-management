@@ -1,5 +1,5 @@
 """
-Indexing service — chunks text, embeds, stores in ChromaDB, records in DB.
+Indexing service — chunks text, embeds, stores in OpenSearch, records in DB.
 All functions accept a SQLAlchemy Session (injected via FastAPI deps).
 """
 

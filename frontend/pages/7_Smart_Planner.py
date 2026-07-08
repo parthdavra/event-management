@@ -83,6 +83,31 @@ def _parse_first_num(s) -> int:
     return int(nums[0]) if nums else 0
 
 
+def _is_canvas_venue(v: dict) -> bool:
+    """True for venues that came from Canvas Events and can be enriched via
+    /venues/enrich (fetches real pricing/capacity/features from their detail page)."""
+    return v.get("source") == "Canvas Events" and bool(v.get("website")) and "canvas-events.co.uk" in v["website"]
+
+
+def _merge_enriched_venues(base_venues: list, display_venues: list) -> list:
+    """Overlay any Canvas-enriched data (st.session_state['sp_enriched']) onto
+    base_venues before indexing — otherwise indexing uses whatever the initial
+    search returned, ignoring enrichment entirely, since sp_enriched is keyed by
+    position in display_venues (a filtered/reordered view), not base_venues.
+    Matched by (name, website) rather than index since the two lists can differ."""
+    sp_enriched = st.session_state.get("sp_enriched", {})
+    if not sp_enriched:
+        return base_venues
+    enriched_by_key = {
+        (dv.get("name"), dv.get("website")): sp_enriched[i]
+        for i, dv in enumerate(display_venues)
+        if i in sp_enriched
+    }
+    if not enriched_by_key:
+        return base_venues
+    return [enriched_by_key.get((v.get("name"), v.get("website")), v) for v in base_venues]
+
+
 def _render_venue_card(v: dict, idx: int = 0, required_guests: int = 0):
     # Use enriched version if available for this card index
     enriched_map = st.session_state.get("sp_enriched", {})
@@ -303,7 +328,7 @@ def _render_venue_card(v: dict, idx: int = 0, required_guests: int = 0):
                                 st.caption(cap_str)
 
         # ── Canvas Events enrichment button ────────────────────────────────
-        is_canvas = source == "Canvas Events" and website and "canvas-events.co.uk" in website
+        is_canvas = _is_canvas_venue(v)
         enriched_map = st.session_state.get("sp_enriched", {})
         if is_canvas:
             if v.get("_enriched"):
@@ -378,6 +403,9 @@ for key in ("sp_raw_text", "sp_requirements", "sp_venues", "sp_source_counts",
 
 if "sp_enriched" not in st.session_state:
     st.session_state["sp_enriched"] = {}   # idx (int) → enriched venue dict
+
+if "sp_auto_enrich_stopped" not in st.session_state:
+    st.session_state["sp_auto_enrich_stopped"] = False
 
 
 
@@ -678,6 +706,7 @@ if st.session_state["sp_requirements"]:
                 st.session_state["sp_venue_hire_budget"] = venue_hire_budget
                 st.session_state["sp_budget_currency"] = _currency or "£"
                 st.session_state["sp_enriched"] = {}
+                st.session_state["sp_auto_enrich_stopped"] = False
                 st.session_state["sp_requirements"].update({
                     "event_name": event_name, "city": city, "location_hint": location_hint,
                     "radius_km": radius_km, "guest_count": guest_count, "budget": budget,
@@ -833,15 +862,52 @@ if st.session_state["sp_venues"] is not None:
 
         st.markdown("---")
 
+        # ── Auto-enrich ALL Canvas venues with full details (no click required) ──
+        # Runs in bounded chunks across reruns rather than one giant blocking loop,
+        # since a full city search can return 50-300 venues and each detail fetch
+        # respects Canvas's own rate limit (canvas_service._POLITE_DELAY = 1.2s) —
+        # chunking gives visible incremental progress and a real chance to stop,
+        # instead of the page appearing frozen for several minutes.
+        if display_venues:
+            _AUTO_ENRICH_CHUNK_SIZE = 15
+            sp_enriched = st.session_state.setdefault("sp_enriched", {})
+            canvas_indices = [i for i, v in enumerate(display_venues) if _is_canvas_venue(v)]
+            pending_all = [i for i in canvas_indices if i not in sp_enriched]
+
+            if pending_all and not st.session_state.get("sp_auto_enrich_stopped"):
+                total_canvas = len(canvas_indices)
+                done_so_far = total_canvas - len(pending_all)
+                st.info(
+                    f"🔄 Auto-loading full Canvas details for all matching venues — "
+                    f"**{done_so_far}/{total_canvas}** done. Canvas is fetched politely "
+                    f"(~1.2s per venue), so this can take a few minutes for large result sets."
+                )
+                st.progress(done_so_far / total_canvas if total_canvas else 1.0)
+                if st.button("⏹ Stop auto-loading (keep what's fetched so far)", key="stop_auto_enrich"):
+                    st.session_state["sp_auto_enrich_stopped"] = True
+                    st.rerun()
+                else:
+                    for i in pending_all[:_AUTO_ENRICH_CHUNK_SIZE]:
+                        try:
+                            sp_enriched[i] = get_client().enrich_venue(display_venues[i])
+                        except Exception:
+                            # Mark as attempted (keep the original dict) so a single
+                            # persistently-failing venue can't stall the batch forever.
+                            sp_enriched[i] = display_venues[i]
+                    st.rerun()
+
         # ── Top 10 Best Matches ────────────────────────────────────────────────
         if display_venues:
             required_facilities = reqs.get("required_facilities") or st.session_state.get("sp_req_facilities") or []
 
-            # Score every venue then take top 10
+            # Score every venue then take top 10 — keep each venue's original
+            # position in display_venues so it can be looked up in
+            # st.session_state["sp_enriched"] (the same index space
+            # _render_venue_card uses), which sorting would otherwise lose.
             scored = []
-            for v in display_venues:
+            for i, v in enumerate(display_venues):
                 sc, mf = _score_venue(v, required_guests or 0, venue_hire_budget, required_facilities)
-                scored.append((sc, mf, v))
+                scored.append((sc, mf, v, i))
             scored.sort(key=lambda x: x[0], reverse=True)
             top10 = scored[:10]
 
@@ -852,7 +918,28 @@ if st.session_state["sp_venues"] is not None:
                 unsafe_allow_html=True,
             )
 
-            for rank, (sc, mf, v) in enumerate(top10, 1):
+            # Manual fallback: the auto-enrich loop above (before this block) already
+            # covers every Canvas venue automatically, so this button normally has
+            # nothing pending — it only reappears if auto-enrichment was stopped early.
+            sp_enriched = st.session_state.setdefault("sp_enriched", {})
+            pending_top10 = [
+                orig_idx for (_, _, v, orig_idx) in top10
+                if _is_canvas_venue(v) and orig_idx not in sp_enriched
+            ]
+            if pending_top10:
+                if st.button(f"🔍 Load full Canvas details for all Top 10 ({len(pending_top10)} remaining)", key="enrich_top10_bulk"):
+                    progress = st.progress(0.0, text="Fetching details from Canvas Events…")
+                    for n, orig_idx in enumerate(pending_top10, 1):
+                        venue_to_enrich = next(v for (_, _, v, oi) in top10 if oi == orig_idx)
+                        try:
+                            sp_enriched[orig_idx] = get_client().enrich_venue(venue_to_enrich)
+                        except Exception as exc:
+                            st.warning(f"Could not enrich '{venue_to_enrich.get('name', 'venue')}': {exc}")
+                        progress.progress(n / len(pending_top10), text=f"Fetched {n}/{len(pending_top10)}…")
+                    st.rerun()
+
+            for rank, (sc, mf, v, orig_idx) in enumerate(top10, 1):
+                v = sp_enriched.get(orig_idx, v)
                 cap_num = _parse_first_num(v.get("capacity", ""))
                 cap_ok  = cap_num >= (required_guests or 1) if cap_num > 0 else None
                 bud_ok  = v.get("within_hire_budget")
@@ -909,6 +996,15 @@ if st.session_state["sp_venues"] is not None:
                         if ct_parts:
                             st.markdown("  |  ".join(ct_parts))
 
+                        if _is_canvas_venue(v) and orig_idx not in sp_enriched:
+                            if st.button("🔍 Load details", key=f"enrich_top10_{orig_idx}"):
+                                with st.spinner("Fetching details from Canvas Events…"):
+                                    try:
+                                        sp_enriched[orig_idx] = get_client().enrich_venue(v)
+                                        st.rerun()
+                                    except Exception as exc:
+                                        st.error(f"Enrichment failed: {exc}")
+
             st.markdown("---")
 
             # ── All matching venues (paginated) ────────────────────────────────
@@ -953,6 +1049,21 @@ if st.session_state["sp_venues"] is not None:
         city = reqs.get("city", reqs.get("location_hint", ""))
         ev_type_for_index = reqs.get("event_type", "") or ""
 
+        # Indexing must use enriched venue data (real prices, capacity breakdown,
+        # room-by-room pricing) when it's available — otherwise the indexed chunk
+        # is the thin pre-enrichment version even after enrichment finishes, since
+        # `venues` below is the original search result list, untouched by enrichment.
+        indexable_venues = _merge_enriched_venues(venues, display_venues)
+        _pending_canvas_count = sum(
+            1 for i, v in enumerate(display_venues)
+            if _is_canvas_venue(v) and i not in st.session_state.get("sp_enriched", {})
+        )
+        if _pending_canvas_count:
+            st.caption(
+                f"ℹ️ {_pending_canvas_count} Canvas venue(s) haven't finished auto-loading full details yet — "
+                f"indexing now will use whatever's been fetched so far for them (may be missing pricing)."
+            )
+
         idx_col1, idx_col2 = st.columns(2)
 
         with idx_col1:
@@ -964,7 +1075,7 @@ if st.session_state["sp_venues"] is not None:
                             event_name=event_name,
                             collection_slug=slug,
                             document_text=st.session_state["sp_raw_text"] or "",
-                            venues=venues,
+                            venues=indexable_venues,
                             city=city,
                         )
                         st.session_state["sp_indexed_collection"] = slug
@@ -990,7 +1101,7 @@ if st.session_state["sp_venues"] is not None:
                         result = client.index_event_type_venues(
                             event_type=ev_type_for_index or "general",
                             city=city,
-                            venues=venues,
+                            venues=indexable_venues,
                         )
                         st.success(
                             f"✅ **{len(venues)} venues** indexed into `evt_u{uid}_{et_slug}` — "
@@ -1065,14 +1176,24 @@ if st.session_state.get("sp_indexed_collection"):
                     effective_query = guard_in["real_intent"]
                     st.divider()
 
-                    st.write(f"**🤖 Event Planning Agent** · Collection: `{collection_name}`")
-                    st.caption("Agent decides which tools to call based on your question.")
+                    st.write(f"**🧭 Multi-Agent Planning System** · Collection: `{collection_name}`")
+                    st.caption("Orchestrator delegates to specialist agents based on your question.")
 
                     _TOOL_ICONS = {
                         "rag_search": "🔍",
                         "filter_by_capacity": "📐",
                         "search_venues_live": "🌐",
                         "find_catering_options": "🍽️",
+                    }
+                    _AGENT_ICONS = {
+                        "orchestrator": "🧭",
+                        "venue_agent": "🏛️",
+                        "catering_agent": "🍽️",
+                    }
+                    _AGENT_LABELS = {
+                        "orchestrator": "Orchestrator",
+                        "venue_agent": "Venue Agent",
+                        "catering_agent": "Catering Agent",
                     }
 
                     trace_events = client.ai_run_agent(
@@ -1084,8 +1205,15 @@ if st.session_state.get("sp_indexed_collection"):
 
                     for event in trace_events:
                         etype = event.get("type")
+                        agent = event.get("agent", "orchestrator")
+                        agent_icon = _AGENT_ICONS.get(agent, "🤖")
+                        agent_label = _AGENT_LABELS.get(agent, agent)
                         if etype == "thinking":
-                            st.caption(f"  💭 {event.get('message', '')}")
+                            st.caption(f"  {agent_icon} *{agent_label}* 💭 {event.get('message', '')}")
+                        elif etype == "delegate":
+                            to_label = _AGENT_LABELS.get(event.get("to", ""), event.get("to", ""))
+                            to_icon = _AGENT_ICONS.get(event.get("to", ""), "🤖")
+                            st.write(f"  {agent_icon} **{agent_label}** → delegating to {to_icon} **{to_label}**: {event.get('question', '')}")
                         elif etype == "tool_call":
                             tool = event.get("tool", "")
                             args = event.get("args", {})
@@ -1094,13 +1222,13 @@ if st.session_state.get("sp_indexed_collection"):
                                 f"`{k}={v}`" for k, v in args.items()
                                 if k not in ("collection_name",)
                             )
-                            st.write(f"  {icon} **Tool called:** `{tool}` — {arg_str}")
+                            st.write(f"    {agent_icon} *{agent_label}* {icon} **Tool called:** `{tool}` — {arg_str}")
                         elif etype == "tool_result":
-                            st.write(f"    ↳ Result: {event.get('summary', '')}")
-                        elif etype == "answer":
+                            st.write(f"      ↳ Result: {event.get('summary', '')}")
+                        elif etype == "answer" and agent == "orchestrator":
                             answer_data = event.get("data", {})
                         elif etype == "error":
-                            st.error(event.get("message", "Unknown error"))
+                            st.error(f"{agent_icon} *{agent_label}*: {event.get('message', 'Unknown error')}")
 
                     # Output guardrail — validate schema
                     st.divider()
@@ -1118,9 +1246,11 @@ if st.session_state.get("sp_indexed_collection"):
 
                     confidence_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(validated["confidence"], "⚪")
                     tools_used = answer_data.get("tools_used", []) if answer_data else []
+                    agents_used = answer_data.get("agents_used", []) if answer_data else []
                     st.write(
                         f"  ✅ Schema valid · "
                         f"Confidence: {confidence_icon} `{validated['confidence']}` · "
+                        f"Agents consulted: `{len(agents_used)}` · "
                         f"Tools: `{len(tools_used)}`"
                     )
                     st.caption(f"Interpretation: *{validated.get('query_interpretation', '')}*")
@@ -1132,7 +1262,7 @@ if st.session_state.get("sp_indexed_collection"):
                 if validated.get("sources_used"):
                     cols[1].caption("Sources: " + ", ".join(f"*{s}*" for s in validated["sources_used"][:3]))
                 if tools_used:
-                    cols[2].caption("Tools: " + " · ".join(f"`{t}`" for t in set(tools_used)))
+                    cols[2].caption("Agents: " + " · ".join(f"`{t}`" for t in set(tools_used)))
 
                 st.session_state["sp_chat_history"].append(
                     {"role": "assistant", "content": validated["answer"]}

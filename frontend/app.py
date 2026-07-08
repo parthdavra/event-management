@@ -1,7 +1,7 @@
 import streamlit as st
 
 from client.api_client import EventManagementClient, APIError
-from utils.auth import is_authenticated
+from utils.auth import is_authenticated, set_session
 
 st.set_page_config(
     page_title="AI Event Manager",
@@ -37,10 +37,7 @@ with tab_login:
                 # Fetch user profile to populate session
                 authed_client = EventManagementClient(token=token)
                 me = authed_client.me()
-                st.session_state["token"] = token
-                st.session_state["user_id"] = me["id"]
-                st.session_state["username"] = me["username"]
-                st.session_state["email"] = me["email"]
+                set_session(token, me)
                 st.rerun()
             except APIError as exc:
                 st.error(exc.detail)
@@ -76,10 +73,7 @@ with tab_signup:
                     user = client.register(new_username, new_email, new_password)
                     # Auto-login after registration
                     token = client.login(new_username, new_password)
-                    st.session_state["token"] = token
-                    st.session_state["user_id"] = user["id"]
-                    st.session_state["username"] = user["username"]
-                    st.session_state["email"] = user["email"]
+                    set_session(token, user)
                     st.success("Account created! Redirecting…")
                     st.rerun()
                 except APIError as exc:

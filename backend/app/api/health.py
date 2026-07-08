@@ -22,16 +22,12 @@ def _check_postgres() -> dict:
         return {"ok": False, "detail": str(exc), "ms": round((time.time() - t0) * 1000)}
 
 
-def _check_chromadb() -> dict:
+def _check_opensearch() -> dict:
     t0 = time.time()
     try:
-        import chromadb
-        if settings.chroma_use_http:
-            client = chromadb.HttpClient(host=settings.chroma_host, port=settings.chroma_port)
-        else:
-            client = chromadb.PersistentClient(path=settings.chroma_persist_dir)
-        cols = client.list_collections()
-        return {"ok": True, "detail": f"{len(cols)} collection(s)", "ms": round((time.time() - t0) * 1000)}
+        from app.services import vector_store
+        health = vector_store.cluster_health()
+        return {"ok": True, "detail": f"cluster status: {health.get('status')}", "ms": round((time.time() - t0) * 1000)}
     except Exception as exc:
         return {"ok": False, "detail": str(exc), "ms": round((time.time() - t0) * 1000)}
 
@@ -70,7 +66,7 @@ def health_check():
     """Full health check — checks all services."""
     checks = {
         "postgres": _check_postgres(),
-        "chromadb": _check_chromadb(),
+        "opensearch": _check_opensearch(),
         "azure_openai": _check_openai(),
         "geoapify": _check_geoapify(),
     }

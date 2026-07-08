@@ -13,7 +13,13 @@ client = get_client()
 
 # ── Session state ─────────────────────────────────────────────────────────────
 if "ai_messages" not in st.session_state:
-    st.session_state["ai_messages"] = []
+    try:
+        history = client.ai_get_history()
+    except APIError:
+        history = []
+    st.session_state["ai_messages"] = [
+        {"role": m["role"], "content": m["content"]} for m in history
+    ]
 
 # ── Sidebar settings ──────────────────────────────────────────────────────────
 with st.sidebar:
@@ -38,6 +44,10 @@ with st.sidebar:
     st.markdown("---")
 
     if st.button("🗑️ Clear Chat", use_container_width=True):
+        try:
+            client.ai_clear_history()
+        except APIError:
+            pass
         st.session_state["ai_messages"] = []
         st.rerun()
 
@@ -107,7 +117,7 @@ if prompt:
                 if use_rag and indexed:
                     st.write(f"**🔍 Step 2 — RAG Search**")
                     collections = client.list_collections()
-                    st.caption(f"  Querying **{len(collections)}** ChromaDB collection(s)…")
+                    st.caption(f"  Querying **{len(collections)}** OpenSearch collection(s)…")
 
                     rag_result = client.ai_rag(
                         query=effective_query,

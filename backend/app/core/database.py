@@ -20,5 +20,5 @@ Base = declarative_base()
 def init_db() -> None:
     """Create all tables if they do not exist."""
     # Import models so SQLAlchemy registers them before create_all
-    from app.models import user, event, chat, indexed_source  # noqa: F401
+    from app.models import user, event, chat, indexed_source, ai_chat, query_metric  # noqa: F401
     Base.metadata.create_all(bind=engine)

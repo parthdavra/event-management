@@ -1,46 +1,97 @@
 """
-RAG service — wraps Azure OpenAI + ChromaDB.
-Uses HttpClient when CHROMA_USE_HTTP=true (Docker), PersistentClient for local dev.
+RAG service — wraps Azure OpenAI + AWS OpenSearch (via app.services.vector_store).
 """
 
 import json
 from typing import Dict, Generator, List, Optional, Tuple
 
 from app.core.config import get_settings
+from app.prompts.chat_direct import PROMPT as _CHAT_DIRECT_PROMPT
+from app.prompts.extract_requirements import PROMPT as _EXTRACT_REQUIREMENTS_PROMPT
+from app.prompts.parse_catering_requirements import PROMPT as _PARSE_CATERING_PROMPT
+from app.prompts.query_rewrite import PROMPT as _QUERY_REWRITE_PROMPT
+from app.prompts.rag_answer_json import PROMPT_TEMPLATE as _RAG_ANSWER_JSON_TEMPLATE
+from app.prompts.rag_answer_plain import PROMPT_TEMPLATE as _RAG_ANSWER_PLAIN_TEMPLATE
 
 settings = get_settings()
+
+if settings.langfuse_public_key and settings.langfuse_secret_key:
+    from langfuse import Langfuse
+    Langfuse(
+        public_key=settings.langfuse_public_key,
+        secret_key=settings.langfuse_secret_key,
+        base_url=settings.langfuse_base_url,
+    )
 
 
 # ── Client factories ──────────────────────────────────────────────────────────
 
+def _instrument_client(client):
+    """Wrap chat/embeddings .create() to push token-usage metrics to CloudWatch,
+    without touching any of the many call sites that use _openai_client()."""
+    from app.services import metrics_service
+
+    orig_chat_create = client.chat.completions.create
+    orig_embed_create = client.embeddings.create
+
+    def chat_create(*args, **kwargs):
+        resp = orig_chat_create(*args, **kwargs)
+        try:
+            usage = getattr(resp, "usage", None)
+            if usage:
+                metrics_service.record_llm_usage(
+                    model=kwargs.get("model", ""),
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=usage.completion_tokens,
+                )
+        except Exception:
+            pass
+        return resp
+
+    def embed_create(*args, **kwargs):
+        resp = orig_embed_create(*args, **kwargs)
+        try:
+            usage = getattr(resp, "usage", None)
+            if usage:
+                metrics_service.record_llm_usage(
+                    model=kwargs.get("model", ""),
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=0,
+                )
+        except Exception:
+            pass
+        return resp
+
+    client.chat.completions.create = chat_create
+    client.embeddings.create = embed_create
+    return client
+
+
 def _openai_client():
-    from openai import AzureOpenAI
-    return AzureOpenAI(
+    if settings.langfuse_public_key and settings.langfuse_secret_key:
+        from langfuse.openai import AzureOpenAI
+    else:
+        from openai import AzureOpenAI
+    client = AzureOpenAI(
         api_key=settings.azure_openai_api_key,
         api_version=settings.azure_openai_api_version,
         azure_endpoint=settings.azure_openai_endpoint,
     )
-
-
-def _chroma_client():
-    import chromadb
-    if settings.chroma_use_http:
-        return chromadb.HttpClient(host=settings.chroma_host, port=settings.chroma_port)
-    return chromadb.PersistentClient(path=settings.chroma_persist_dir)
+    return _instrument_client(client)
 
 
 # ── Collection helpers ────────────────────────────────────────────────────────
 
-def get_collection(collection_name: str):
-    return _chroma_client().get_or_create_collection(name=collection_name)
-
-
 def delete_collection(collection_name: str) -> bool:
-    try:
-        _chroma_client().delete_collection(collection_name)
-        return True
-    except Exception:
-        return False
+    from app.services import vector_store
+    return vector_store.delete_collection(collection_name)
+
+
+def get_chunks_by_filter(
+    collection_name: str, where: Optional[dict] = None, include: Optional[List[str]] = None
+) -> Tuple[List[str], List[dict]]:
+    from app.services import vector_store
+    return vector_store.get_by_filter(collection_name, where=where, include=include)
 
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
@@ -60,10 +111,9 @@ def add_to_collection(
     metadatas: List[dict],
     ids: List[str],
 ) -> int:
-    collection = get_collection(collection_name)
+    from app.services import vector_store
     embeddings = get_embeddings(texts)
-    collection.add(documents=texts, embeddings=embeddings, metadatas=metadatas, ids=ids)
-    return len(texts)
+    return vector_store.add(collection_name, ids, texts, embeddings, metadatas)
 
 
 # ── Retrieval ─────────────────────────────────────────────────────────────────
@@ -72,24 +122,18 @@ def get_raw_json_chunks_from_collection(
     collection_name: str, city: str = ""
 ) -> List[dict]:
     """
-    Retrieve all raw-JSON venue chunks from a ChromaDB collection without
+    Retrieve all raw-JSON venue chunks from an OpenSearch collection without
     a semantic query.  Used by Smart Planner to serve data from indexed chunks.
     Returns parsed venue dicts; empty list when collection doesn't exist.
     """
     import json as _json
+    from app.services import vector_store
     try:
-        client = _chroma_client()
-        try:
-            col = client.get_collection(collection_name)
-        except Exception:
-            return []
-
-        results = col.get(
+        docs, metas = vector_store.get_by_filter(
+            collection_name,
             where={"chunk_type": {"$eq": "raw_json"}},
             include=["documents", "metadatas"],
         )
-        docs: List[str] = results.get("documents") or []
-        metas: List[dict] = results.get("metadatas") or []
         city_lower = city.lower().strip()
 
         venues: List[dict] = []
@@ -123,12 +167,9 @@ def get_raw_json_chunks_from_collection(
 def query_collection(
     collection_name: str, query: str, n_results: int = 5
 ) -> Tuple[List[str], List[dict]]:
-    collection = get_collection(collection_name)
+    from app.services import vector_store
     query_embedding = get_embeddings([query])[0]
-    results = collection.query(query_embeddings=[query_embedding], n_results=n_results)
-    docs = results.get("documents", [[]])[0]
-    metas = results.get("metadatas", [[]])[0]
-    return docs, metas
+    return vector_store.query(collection_name, query_embedding, n_results=n_results)
 
 
 def query_multiple_collections(
@@ -215,17 +256,15 @@ def query_with_smart_filters(
             nums = _re.findall(r"\d+", raw or "")
             return int(nums[0]) if nums else 0
 
+        from app.services import vector_store
         for name in collection_names:
             try:
-                col = _chroma_client().get_collection(name)
-                raw_results = col.get(
+                docs_raw, metas_raw = vector_store.get_by_filter(
+                    name,
                     where={"chunk_type": "venue"},
                     include=["documents", "metadatas"],
                 )
-                for doc, meta in zip(
-                    raw_results.get("documents", []),
-                    raw_results.get("metadatas", []),
-                ):
+                for doc, meta in zip(docs_raw, metas_raw):
                     # Try metadata capacity first
                     cap = _parse_cap(meta.get("capacity", ""))
                     # If metadata empty, try parsing from doc text
@@ -272,7 +311,7 @@ def query_with_smart_filters(
 def rewrite_query_with_history(query: str, history: Optional[List[dict]]) -> str:
     """
     If the conversation has history, rewrite the query to be self-contained so
-    ChromaDB vector search can resolve pronouns and references like "the second one",
+    OpenSearch vector search can resolve pronouns and references like "the second one",
     "its price", "that venue", etc.
     Returns the original query unchanged when there is no history or the call fails.
     """
@@ -287,17 +326,7 @@ def rewrite_query_with_history(query: str, history: Optional[List[dict]]) -> str
         resp = client.chat.completions.create(
             model=settings.azure_openai_deployment,
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a query rewriter. Given a conversation and the user's latest message, "
-                        "rewrite the message so it is fully self-contained — resolve any pronouns, "
-                        "ordinal references ('the second one', 'it', 'that venue', 'same place'), or "
-                        "implicit context into explicit terms from the conversation.\n"
-                        "If the message is already self-contained, return it UNCHANGED.\n"
-                        "Output ONLY the rewritten query — no explanation, no preamble."
-                    ),
-                },
+                {"role": "system", "content": _QUERY_REWRITE_PROMPT},
                 {"role": "user", "content": f"Conversation:\n{ctx}\n\nLatest message: {query}"},
             ],
             temperature=0,
@@ -316,12 +345,7 @@ def generate_rag_response(
 ) -> str:
     client = _openai_client()
     context = "\n\n---\n\n".join(context_docs) if context_docs else "No relevant context found."
-    system_prompt = (
-        "You are a helpful AI assistant for an event management platform. "
-        "Use the retrieved context below to answer the user's question accurately. "
-        "If the answer is not in the context, say so clearly and provide general guidance.\n\n"
-        f"Retrieved Context:\n{context}"
-    )
+    system_prompt = _RAG_ANSWER_PLAIN_TEMPLATE.format(context=context)
     messages = [{"role": "system", "content": system_prompt}]
     if chat_history:
         messages.extend(chat_history[-20:])
@@ -342,42 +366,7 @@ def generate_rag_response_json(
 ) -> dict:
     client = _openai_client()
     context = "\n\n---\n\n".join(context_docs) if context_docs else "No relevant context found."
-    system_prompt = (
-        "You are an expert AI assistant for an event management platform.\n"
-        "Use the retrieved context below AND the conversation history to answer the user's question.\n\n"
-        "CAPACITY RULES (STRICT):\n"
-        "- When the user asks for a venue for N people:\n"
-        "  • ONLY recommend venues whose capacity is >= N.\n"
-        "  • EXCLUDE venues whose capacity is larger than N + 150 (avoid oversized venues).\n"
-        "    Example: user asks for 250 people → include venues with capacity 250-400, exclude 600+ capacity.\n"
-        "  • If a capacity says 'up to X' or 'max X', use X for comparison.\n"
-        "  • Always state each venue's exact capacity in your answer.\n"
-        "  • If NO venues in the context match this range, say 'No venues found for that capacity' — do NOT invent venues.\n\n"
-        "BUDGET RULES (STRICT):\n"
-        "- When the user states a budget (e.g. £5,000):\n"
-        "  • Highlight venues whose hire fee / starting price is at or below the budget.\n"
-        "  • Mark venues above the stated budget with '⚠️ Over budget'.\n"
-        "  • If pricing is not stated for a venue, note 'Price: contact venue' and include it.\n"
-        "  • Never omit an on-budget venue just because another field is missing.\n\n"
-        "AREA / LOCATION RULES (STRICT):\n"
-        "- When the user names a specific area, neighbourhood, or postcode:\n"
-        "  • ONLY list venues in or immediately adjacent to that area.\n"
-        "  • If no venues are found in the requested area, say so explicitly and suggest the nearest match.\n"
-        "  • Do NOT list venues in other cities or far-away boroughs as alternatives unless no local match exists.\n\n"
-        "CONVERSATION CONTEXT RULES:\n"
-        "- If the user refers to something mentioned earlier ('the second one', 'its price', 'that venue'),\n"
-        "  resolve the reference from the conversation history before answering.\n"
-        "- Maintain continuity across turns — do not forget what was discussed.\n\n"
-        "GENERAL:\n"
-        "- If the context is insufficient to answer with confidence, say so clearly. Do NOT hallucinate venues.\n"
-        "- Format your answer in clean markdown with venue details as a bulleted or numbered list.\n\n"
-        "Return ONLY a valid JSON object with exactly these fields:\n"
-        '  "answer"              : your complete answer as a markdown string\n'
-        '  "sources_used"        : list of venue names or document titles you referenced\n'
-        '  "confidence"          : "high" if context directly answers, "medium" if partial, "low" if not at all\n'
-        '  "query_interpretation": one sentence describing how you understood the question\n\n'
-        f"Retrieved Context:\n{context}"
-    )
+    system_prompt = _RAG_ANSWER_JSON_TEMPLATE.format(context=context)
     messages = [{"role": "system", "content": system_prompt}]
     if chat_history:
         messages.extend(chat_history[-20:])
@@ -396,13 +385,7 @@ def generate_chat_response(
     query: str, chat_history: Optional[List[dict]] = None
 ) -> str:
     client = _openai_client()
-    system_prompt = (
-        "You are a helpful AI assistant for an event management platform. "
-        "Help users with event planning, scheduling, catering, venue selection, "
-        "and any event-related questions. Be concise and practical. "
-        "Maintain full conversation context across turns."
-    )
-    messages = [{"role": "system", "content": system_prompt}]
+    messages = [{"role": "system", "content": _CHAT_DIRECT_PROMPT}]
     if chat_history:
         messages.extend(chat_history[-20:])
     messages.append({"role": "user", "content": query})
@@ -418,36 +401,10 @@ def generate_chat_response(
 def extract_event_requirements(text: str) -> dict:
     """Use LLM to parse event requirements from a document or free-text input."""
     client = _openai_client()
-    system_prompt = (
-        "You are an event planning assistant. Extract structured requirements from the user's text.\n"
-        "Return ONLY a valid JSON object with exactly these fields:\n"
-        '- "event_name": string\n'
-        '- "city": string (city name for geocoding, e.g. "London")\n'
-        '- "location_hint": string (specific area, e.g. "Camden Market"; same as city if not mentioned)\n'
-        '- "radius_km": number (search radius in km; use document value if stated, else 2)\n'
-        '- "categories": array — choose from EXACTLY these values:\n'
-        '  ["Restaurants & Cafes","Bars & Nightlife","Hotels & Accommodation",\n'
-        '   "Conference & Event Venues","Arts & Entertainment","Sports & Recreation","Attractions & Tourism"]\n'
-        "\n"
-        "CATEGORY SELECTION RULES (follow strictly):\n"
-        '- Corporate / networking / business / meeting / seminar / conference / AGM / product launch → ["Conference & Event Venues"]\n'
-        '- Wedding / gala dinner / black-tie / formal banquet → ["Conference & Event Venues", "Hotels & Accommodation"]\n'
-        '- Birthday / casual party / graduation / social → ["Restaurants & Cafes", "Bars & Nightlife"]\n'
-        '- Concert / theatre / art show / exhibition / culture → ["Arts & Entertainment"]\n'
-        '- Sports / fitness / team building → ["Sports & Recreation"]\n'
-        "- Add 'Restaurants & Cafes' ONLY if the brief explicitly asks for a restaurant as the PRIMARY venue\n"
-        "- NEVER return more than 2 categories unless the brief clearly spans multiple venue types\n"
-        "\n"
-        '- "guest_count": number or null\n'
-        '- "budget": string or null (e.g. "£32,500")\n'
-        '- "event_date": string or null\n'
-        '- "event_type": string (concise description, e.g. "corporate networking evening")\n'
-        '- "collection_slug": string (lowercase, max 20 chars, underscores only, e.g. "abc_corp_2026")'
-    )
     resp = client.chat.completions.create(
         model=settings.azure_openai_deployment,
         messages=[
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": _EXTRACT_REQUIREMENTS_PROMPT},
             {"role": "user", "content": text[:6000]},
         ],
         temperature=0,
@@ -461,29 +418,10 @@ def parse_catering_requirements(text: str) -> dict:
     """Use LLM to extract catering dietary groups, headcount, budget, and location from free text."""
     try:
         client = _openai_client()
-        system_prompt = (
-            "You are a catering requirements parser. Extract structured catering information from the user's text.\n"
-            "Return ONLY a valid JSON object with exactly these fields:\n"
-            '- "groups": array of objects, each with:\n'
-            '    - "label": string (descriptive name, e.g. "Vegan Guests")\n'
-            '    - "count": integer (number of people in this group)\n'
-            '    - "dietary_type": string — MUST be exactly one of: vegan, vegetarian, halal, kosher, non-veg, gluten-free\n'
-            "    RULES for dietary_type:\n"
-            "    - 'halal non-veg', 'non-veg halal', 'halal meat' → 'halal'\n"
-            "    - 'vegetarian', 'veg' → 'vegetarian'\n"
-            "    - 'vegan' → 'vegan'\n"
-            "    - 'regular', 'standard', 'no restriction', 'non-vegetarian', 'non veg', 'normal' → 'non-veg'\n"
-            "    - 'kosher' → 'kosher'\n"
-            "    - 'gluten free', 'gluten-free', 'celiac' → 'gluten-free'\n"
-            '- "total_headcount": integer (sum of all group counts; if not stated, sum the groups)\n'
-            '- "budget": number or null (total food budget in GBP; strip currency symbols; null if not mentioned)\n'
-            '- "location": string or null (city name for vendor search; null if not mentioned)\n'
-            "If no dietary groups are found, return an empty groups array."
-        )
         resp = client.chat.completions.create(
             model=settings.azure_openai_deployment,
             messages=[
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": _PARSE_CATERING_PROMPT},
                 {"role": "user", "content": text[:6000]},
             ],
             temperature=0,

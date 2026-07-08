@@ -13,13 +13,49 @@ def get_client() -> EventManagementClient:
     return EventManagementClient(token=st.session_state.get("token"))
 
 
+def set_session(token: str, user: dict) -> None:
+    """Populate session state and mirror the token into the URL so a page
+    refresh (which wipes st.session_state) can restore the session instead
+    of bouncing the user back to the login page."""
+    st.session_state["token"] = token
+    st.session_state["user_id"] = user["id"]
+    st.session_state["username"] = user["username"]
+    st.session_state["email"] = user["email"]
+    st.query_params["token"] = token
+
+
+def _restore_session_from_query_params() -> None:
+    if st.session_state.get("token"):
+        return
+    qp_token = st.query_params.get("token")
+    if not qp_token:
+        return
+    try:
+        me = EventManagementClient(token=qp_token).me()
+        st.session_state["token"] = qp_token
+        st.session_state["user_id"] = me["id"]
+        st.session_state["username"] = me["username"]
+        st.session_state["email"] = me["email"]
+    except APIError:
+        # Token was rejected (expired/invalid) — drop it so we stop retrying.
+        if "token" in st.query_params:
+            del st.query_params["token"]
+    except Exception:
+        # Backend unreachable — leave the query param alone and try again
+        # on the next rerun rather than logging the user out.
+        pass
+
+
 def is_authenticated() -> bool:
+    _restore_session_from_query_params()
     return bool(st.session_state.get("token") and st.session_state.get("user_id"))
 
 
 def logout() -> None:
     for key in ("token", "user_id", "username", "email"):
         st.session_state.pop(key, None)
+    if "token" in st.query_params:
+        del st.query_params["token"]
 
 
 def require_auth() -> None:
@@ -43,6 +79,7 @@ def show_sidebar() -> None:
         st.page_link("pages/5_Profile.py", label="Profile", icon="⚙️")
         st.page_link("pages/6_System_Health.py", label="System Health", icon="🩺")
         st.page_link("pages/7_Smart_Planner.py", label="Smart Planner", icon="🎯")
+        st.page_link("pages/8_Query_Insights.py", label="Query Insights", icon="📊")
         st.markdown("---")
         if st.button("Logout", use_container_width=True):
             logout()

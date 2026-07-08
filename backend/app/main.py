@@ -1,7 +1,9 @@
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.config import get_settings
 from app.core.database import init_db
@@ -40,6 +42,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Observability: system-level request metrics (CloudWatch) ─────────────────
+class MetricsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        t0 = time.time()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            duration_ms = (time.time() - t0) * 1000
+            try:
+                from app.services import metrics_service
+                metrics_service.record_request(request.url.path, request.method, status_code, duration_ms)
+            except Exception:
+                pass
+
+
+app.add_middleware(MetricsMiddleware)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(health.router)

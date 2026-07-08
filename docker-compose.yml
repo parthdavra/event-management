@@ -1,41 +1,6 @@
 version: "3.11"
 
 services:
-  # ── PostgreSQL ───────────────────────────────────────────────────────────────
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: event_mgmt
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d event_mgmt"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  # ── ChromaDB ─────────────────────────────────────────────────────────────────
-  chromadb:
-    image: chromadb/chroma:latest
-    ports:
-      - "8000:8000"
-    volumes:
-      - chroma_data:/chroma/chroma
-    environment:
-      - IS_PERSISTENT=TRUE
-      - PERSIST_DIRECTORY=/chroma/chroma
-      - ANONYMIZED_TELEMETRY=FALSE
-    healthcheck:
-      test: ["CMD-SHELL", "timeout 5 bash -c '</dev/tcp/localhost/8000'"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
-      start_period: 20s
-    restart: unless-stopped
-
   # ── Backend (FastAPI) ─────────────────────────────────────────────────────────
   backend:
     build:
@@ -49,25 +14,13 @@ services:
       - 8.8.8.8
       - 8.8.4.4
     environment:
-      - DATABASE_URL=${DATABASE_URL_DOCKER}
-      - SECRET_KEY=${SECRET_KEY}
-      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
-      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
-      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION:-2024-02-01}
-      - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT:-gpt-4o}
-      - AZURE_OPENAI_EMBEDDING_DEPLOYMENT=${AZURE_OPENAI_EMBEDDING_DEPLOYMENT:-text-embedding-ada-002}
-      - CHROMA_HOST=chromadb
-      - CHROMA_PORT=8000
-      - CHROMA_USE_HTTP=true
-      - GEOAPIFY_API_KEY=${GEOAPIFY_API_KEY}
-      - FOURSQUARE_API_KEY=${FOURSQUARE_API_KEY}
-      - MCP_SERVER_URL=${MCP_SERVER_URL}
-      - MCP_CALLER_ID=${MCP_CALLER_ID}
-    depends_on:
-      db:
-        condition: service_healthy
-      chromadb:
-        condition: service_healthy
+      # Everything except the AWS identity itself now lives in AWS Secrets Manager
+      # (see infra/secrets-manager.yml) — fetched by app.core.config at startup.
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+      - AWS_REGION=${AWS_REGION:-eu-west-2}
+      - AWS_SECRETS_MANAGER_SECRET_NAME=${AWS_SECRETS_MANAGER_SECRET_NAME:-dstrmaysam-evmgmt-secrets}
     restart: unless-stopped
 
   # ── Frontend (Streamlit) ──────────────────────────────────────────────────────
@@ -82,7 +35,3 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
-
-volumes:
-  postgres_data:
-  chroma_data:

@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Dedicated AWS OpenSearch domain used as the cloud vector DB for event-management's RAG pipeline.
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: dstrmaysam-evmgmt-vectordb
+    AllowedPattern: "^[a-z][a-z0-9-]{2,27}$"
+    Description: OpenSearch domain name (max 28 chars).
+  ProjectTag:
+    Type: String
+    Default: event-management
+  ApplicationTag:
+    Type: String
+    Default: dstrmaysam
+  OwnerTag:
+    Type: String
+    Default: parthdavra
+  MasterUserName:
+    Type: String
+    Default: evmgmt-admin
+  MasterUserPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 12
+    Description: Master user password for the domain's internal user database (fine-grained access control). Pass at deploy time, never store in the template.
+
+Resources:
+  VectorDbDomain:
+    Type: AWS::OpenSearchService::Domain
+    Properties:
+      DomainName: !Ref DomainName
+      EngineVersion: OpenSearch_2.17
+      ClusterConfig:
+        InstanceType: t3.small.search
+        InstanceCount: 1
+        DedicatedMasterEnabled: false
+        ZoneAwarenessEnabled: false
+      EBSOptions:
+        EBSEnabled: true
+        VolumeType: gp3
+        VolumeSize: 10
+      EncryptionAtRestOptions:
+        Enabled: true
+      NodeToNodeEncryptionOptions:
+        Enabled: true
+      DomainEndpointOptions:
+        EnforceHTTPS: true
+        TLSSecurityPolicy: Policy-Min-TLS-1-2-2019-07
+      AdvancedSecurityOptions:
+        Enabled: true
+        InternalUserDatabaseEnabled: true
+        MasterUserOptions:
+          MasterUserName: !Ref MasterUserName
+          MasterUserPassword: !Ref MasterUserPassword
+      AccessPolicies:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: "*"
+            Action: "es:*"
+            Resource: !Sub "arn:${AWS::Partition}:es:${AWS::Region}:${AWS::AccountId}:domain/${DomainName}/*"
+      Tags:
+        - Key: Name
+          Value: !Ref DomainName
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Application
+          Value: !Ref ApplicationTag
+        - Key: Owner
+          Value: !Ref OwnerTag
+
+Outputs:
+  DomainEndpoint:
+    Description: HTTPS endpoint for the OpenSearch domain (no scheme).
+    Value: !GetAtt VectorDbDomain.DomainEndpoint
+  DomainArn:
+    Value: !GetAtt VectorDbDomain.Arn
+  MasterUserName:
+    Value: !Ref MasterUserName

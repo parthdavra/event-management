@@ -236,6 +236,18 @@ class EventManagementClient:
             json={"query": text},
         )
 
+    def ai_get_history(self) -> List[Dict]:
+        return self._request("GET", "/ai/history")
+
+    def ai_clear_history(self) -> Dict:
+        return self._request("DELETE", "/ai/history")
+
+    def ai_metrics_summary(self) -> Dict:
+        return self._request("GET", "/ai/metrics/summary")
+
+    def ai_metrics_recent(self, limit: int = 20) -> List[Dict]:
+        return self._request("GET", "/ai/metrics/recent", params={"limit": limit})
+
     def ai_check_input(self, query: str) -> Dict:
         return self._request(
             "POST",

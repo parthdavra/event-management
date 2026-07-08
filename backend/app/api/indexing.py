@@ -128,7 +128,7 @@ async def upload_document(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Index a PDF, DOCX, or TXT file into ChromaDB."""
+    """Index a PDF, DOCX, or TXT file into OpenSearch."""
     ext = (file.filename or "").rsplit(".", 1)[-1].lower()
     if ext not in ("pdf", "docx", "txt"):
         raise HTTPException(
@@ -165,7 +165,7 @@ def index_text(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Index raw text into ChromaDB."""
+    """Index raw text into OpenSearch."""
     source_name = body.get("source_name", "").strip()
     text = body.get("text", "").strip()
     if not source_name or not text:
@@ -351,7 +351,7 @@ def feedr_index_start(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Scrape feedr.co catering vendors for a city and index them into ChromaDB.
+    Scrape feedr.co catering vendors for a city and index them into OpenSearch.
     Runs in a background thread — poll GET /indexing/feedr/{job_id} for status.
     """
     from app.services import feedr_service
