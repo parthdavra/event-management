@@ -80,6 +80,7 @@ def show_sidebar() -> None:
         st.page_link("pages/6_System_Health.py", label="System Health", icon="🩺")
         st.page_link("pages/7_Smart_Planner.py", label="Smart Planner", icon="🎯")
         st.page_link("pages/8_Query_Insights.py", label="Query Insights", icon="📊")
+        st.page_link("pages/9_Business_Metrics.py", label="Business Metrics", icon="📈")
         st.markdown("---")
         if st.button("Logout", use_container_width=True):
             logout()

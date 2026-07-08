@@ -2,13 +2,17 @@ import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from langfuse import observe
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db
+from app.core.config import get_settings
 from app.models.user import User
 from app.schemas.ai import (
     AgentRequest,
     AIHistoryMessage,
+    BusinessMetricsSummary,
+    BusinessMetricsTrend,
     ChatRequest,
     ExtractRequirementsResponse,
     InputGuardrailResponse,
@@ -18,8 +22,9 @@ from app.schemas.ai import (
     RagResponse,
 )
 from app.services import (
-    ai_chat_service,
     agent_service,
+    ai_chat_service,
+    business_metrics_service,
     guardrails_service,
     indexing_service,
     metrics_service,
@@ -29,6 +34,35 @@ from app.services import (
 )
 
 router = APIRouter(prefix="/ai", tags=["ai"])
+settings = get_settings()
+
+
+def _record_langfuse_query_metrics(endpoint: str, latency_ms: float, usage: dict, total_tokens: int) -> None:
+    """
+    Surface per-query cost/token/latency in Langfuse. Scores (not just metadata)
+    so Langfuse's own UI aggregates avg/trend across queries natively, without
+    needing our own dashboard for it. Must be called from within the active
+    @observe span for the current endpoint — score_current_trace/update_current_span
+    attach to whatever trace is currently in context.
+    """
+    if not (settings.langfuse_public_key and settings.langfuse_secret_key):
+        return
+    try:
+        from langfuse import get_client
+        client = get_client()
+        client.update_current_span(metadata={
+            "endpoint": endpoint,
+            "cost_usd": usage["cost_usd"],
+            "prompt_tokens": usage["prompt_tokens"],
+            "completion_tokens": usage["completion_tokens"],
+            "total_tokens": total_tokens,
+            "latency_ms": round(latency_ms, 1),
+        })
+        client.score_current_trace(name="cost_usd", value=usage["cost_usd"], data_type="NUMERIC")
+        client.score_current_trace(name="total_tokens", value=total_tokens, data_type="NUMERIC")
+        client.score_current_trace(name="latency_ms", value=round(latency_ms, 1), data_type="NUMERIC")
+    except Exception:
+        pass  # Never let Langfuse instrumentation break the actual request
 
 
 def _save_query_metric(
@@ -42,14 +76,17 @@ def _save_query_metric(
 ) -> None:
     latency_ms = (time.time() - t0) * 1000
     usage = metrics_service.get_query_capture()
+    total_tokens = usage["prompt_tokens"] + usage["completion_tokens"]
     metric_id = query_metrics_service.save(
         db, user_id, endpoint, latency_ms,
         usage["prompt_tokens"], usage["completion_tokens"], usage["cost_usd"],
     )
     ragas_service.score_query_in_background(metric_id, query, answer, contexts)
+    _record_langfuse_query_metrics(endpoint, latency_ms, usage, total_tokens)
 
 
 @router.post("/chat")
+@observe(name="chat_query")
 def direct_chat(
     body: ChatRequest,
     current_user: User = Depends(get_current_user),
@@ -70,6 +107,7 @@ def direct_chat(
 
 
 @router.post("/rag", response_model=RagResponse)
+@observe(name="rag_query")
 def rag_chat(
     body: RagRequest,
     current_user: User = Depends(get_current_user),
@@ -144,6 +182,7 @@ def check_input(
 
 
 @router.post("/agent")
+@observe(name="agent_query")
 def run_agent(
     body: AgentRequest,
     current_user: User = Depends(get_current_user),
@@ -215,3 +254,27 @@ def get_query_metrics_recent(
 ):
     """Most recent individual queries (endpoint, latency, tokens, cost) for the current user."""
     return query_metrics_service.get_recent(db, current_user.id, limit=limit)
+
+
+@router.get("/metrics/business-summary", response_model=BusinessMetricsSummary)
+def get_business_metrics_summary(
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Platform-wide business metrics — growth, feature adoption, power users.
+    Aggregates across ALL users; this app has no admin/role concept, so any
+    authenticated user can view it, same as every other page."""
+    return business_metrics_service.get_business_summary(db)
+
+
+@router.get("/metrics/business-trend", response_model=BusinessMetricsTrend)
+def get_business_metrics_trend(
+    days: int = 30,
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Events-created and queries-run, bucketed by day, for the last N days."""
+    return {
+        "events_trend": business_metrics_service.get_events_trend(db, days),
+        "queries_trend": business_metrics_service.get_queries_trend(db, days),
+    }

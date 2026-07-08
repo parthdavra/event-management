@@ -248,6 +248,12 @@ class EventManagementClient:
     def ai_metrics_recent(self, limit: int = 20) -> List[Dict]:
         return self._request("GET", "/ai/metrics/recent", params={"limit": limit})
 
+    def ai_business_summary(self) -> Dict:
+        return self._request("GET", "/ai/metrics/business-summary")
+
+    def ai_business_trend(self, days: int = 30) -> Dict:
+        return self._request("GET", "/ai/metrics/business-trend", params={"days": days})
+
     def ai_check_input(self, query: str) -> Dict:
         return self._request(
             "POST",
